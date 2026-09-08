@@ -66,6 +66,8 @@ export interface BattleEvent {
   side: Side;
   message: string;
   amount?: number;
+  teams?: [Team, Team];
+  move?: Move;
 }
 
 export interface BattleState {
@@ -103,5 +105,5 @@ export function activePokemon(state: BattleState, side: Side): Pokemon {
 
 export function emit(state: BattleState, events: BattleEvent[], kind: EventKind, side: Side,
   message: string, amount?: number): void {
-  events.push({ turn: state.turn, kind, side, message, amount });
+  events.push({ turn: state.turn, kind, side, message, amount, teams: structuredClone(state.teams) });
 }

@@ -9,6 +9,7 @@ import MovePanel, { type MoveHint } from './MovePanel';
 import SwitchMenu from './SwitchMenu';
 import BattleLog from './BattleLog';
 import ForfeitDialog from './ForfeitDialog';
+import { BattleAudio } from './battleAudio';
 
 const STATUS_LABELS: Record<Status, string> = {
   burn: 'BRN', poison: 'PSN', toxic: 'TOX', paralysis: 'PAR', sleep: 'SLP', freeze: 'FRZ',
@@ -39,15 +40,19 @@ function useElapsedClock(running: boolean, match: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
-function playCry(pokemon: ApiPokemon | undefined): void {
-  const url = pokemon?.cries.latest ?? pokemon?.cries.legacy;
-  if (!url) return;
-  const audio = new Audio(url);
-  audio.volume = 0.22;
-  void audio.play().catch(() => undefined);
-}
-
 function useBattleCries(playerName: string, opponentName: string, sprites: Record<string, ApiPokemon>, enabled: boolean): void {
+  const clips = useMemo(() => Object.fromEntries(Object.entries(sprites).flatMap(([name, pokemon]) => {
+    const url = pokemon.cries.latest || pokemon.cries.legacy;
+    if (!url) return [];
+    const clip = new Audio(url);
+    clip.preload = 'auto';
+    clip.volume = 0.22;
+    return [[name, clip]];
+  })), [sprites]);
+  useEffect(() => {
+    Object.values(clips).forEach((clip) => clip.load());
+    return () => Object.values(clips).forEach((clip) => { clip.pause(); clip.removeAttribute('src'); clip.load(); });
+  }, [clips]);
   const previous = useRef({ player: '', opponent: '' });
   useEffect(() => {
     const entering = previous.current.player === '' && previous.current.opponent === ''
@@ -55,9 +60,13 @@ function useBattleCries(playerName: string, opponentName: string, sprites: Recor
       : [playerName !== previous.current.player ? playerName : '', opponentName !== previous.current.opponent ? opponentName : ''].filter(Boolean);
     previous.current = { player: playerName, opponent: opponentName };
     if (!enabled) return;
-    const timers = entering.map((name, index) => window.setTimeout(() => playCry(sprites[name]), index * 140));
-    return () => timers.forEach((timer) => window.clearTimeout(timer));
-  }, [enabled, opponentName, playerName, sprites]);
+    // Do not let an unloaded cry start seconds after its entrance animation.
+    for (const name of entering) {
+      const clip = clips[name];
+      if (clip && clip.readyState >= 3) { clip.currentTime = 0; void clip.play().catch(() => undefined); }
+    }
+    return () => Object.values(clips).forEach((clip) => clip.pause());
+  }, [enabled, opponentName, playerName, clips]);
 }
 
 function eventVisualDelay(event: BattleEvent | undefined, reducedMotion: boolean): number {
@@ -168,8 +177,7 @@ function moveHint(chart: TypeChart, move: Move, defenderTypes: readonly string[]
   return null;
 }
 
-function StatusCapsule({ side, displayHp }: { side: Side; displayHp?: number }) {
-  const { session: { battle } } = useBattle();
+function StatusCapsule({ side, battle, displayHp }: { side: Side; battle: BattleState; displayHp?: number }) {
   const team = battle.teams[side];
   const pokemon = activePokemon(battle, side);
   const hp = displayHp ?? pokemon.hp;
@@ -198,37 +206,14 @@ function StatusCapsule({ side, displayHp }: { side: Side; displayHp?: number }) 
   </div>;
 }
 
-/**
- * The reducer resolves a turn atomically, but the broadcast UI reveals its events
- * one by one. Reverse only the unrevealed HP events so bars change beside the
- * damage/heal text instead of jumping to the turn's final state early.
- */
-function displayedHp(battle: BattleState, events: readonly BattleEvent[], activeIndex: number, side: Side): number {
-  const pokemon = activePokemon(battle, side);
-  if (activeIndex < 0) return pokemon.hp;
-  let hp = pokemon.hp;
-  for (let index = events.length - 1; index > activeIndex; index -= 1) {
-    const event = events[index];
-    if (!event || event.side !== side) continue;
-    if (event.kind === 'damage') hp += event.amount ?? 0;
-    if (event.kind === 'heal') hp -= event.amount ?? 0;
-  }
-  return Math.max(0, Math.min(pokemon.stats.hp, hp));
-}
-
-function faintRevealed(battle: BattleState, events: readonly BattleEvent[], activeIndex: number, side: Side): boolean {
-  if (activePokemon(battle, side).hp > 0) return false;
-  if (activeIndex < 0) return true;
-  return events.some((event, index) => index <= activeIndex && event.side === side && event.kind === 'faint');
-}
-
-function Combatant({ side, pulse, switchingOut = false, fainted = false }: {
+function Combatant({ side, battle, pulse, switchingOut = false, fainted = false }: {
   side: Side;
+  battle: BattleState;
   pulse?: 'attack' | 'hit';
   switchingOut?: boolean;
   fainted?: boolean;
 }) {
-  const { session: { battle }, sprites } = useBattle();
+  const { sprites } = useBattle();
   const pokemon = activePokemon(battle, side);
   const data = sprites[pokemon.name];
   const [failed, setFailed] = useState(false);
@@ -301,6 +286,7 @@ function moveEffectVariant(move: Move): MoveEffectVariant {
 
 function moveForEvent(event: BattleEvent | undefined, battle: BattleState): Move | null {
   if (!event || event.kind !== 'move') return null;
+  if (event.move) return event.move;
   const message = event.message.toLowerCase();
   return battle.teams[event.side].pokemon
     .flatMap((pokemon) => pokemon.moves)
@@ -341,26 +327,39 @@ export default function BattleScene() {
   const [showOpponent, setShowOpponent] = useState(false);
   const [confirmForfeit, setConfirmForfeit] = useState(false);
   const [criesEnabled, setCriesEnabled] = useState(true);
+  const audio = useMemo(() => new BattleAudio(), []);
   const [logOpen, setLogOpen] = useState(false);
   const [preview, setPreview] = useState<Move | null>(null);
   const [match, setMatch] = useState(0);
-  const [transitioningSide, setTransitioningSide] = useState<Side | null>(null);
   const dialogueRef = useRef<HTMLElement>(null);
-  const switchTimer = useRef<number | null>(null);
   const forced = battle.phase === 'switch';
   const ended = battle.phase === 'ended';
   const winnerName = battle.winner === 0 || battle.winner === 1 ? battle.teams[battle.winner].name : '';
   const localWaiting = mode === 'local' && pendingPlayerAction !== null;
   const reducedMotion = useReducedMotion();
   const elapsed = useElapsedClock(!ended, match);
-  useBattleCries(player.name, opponent.name, sprites, criesEnabled);
   const presentation = useEventPresentation(events, reducedMotion);
   const activeEvent = presentation.activeIndex >= 0 ? events[presentation.activeIndex] : undefined;
+  // Keep the last presented frame while React starts a newly appended batch.
+  const frame = useRef(battle);
+  const displayBattle = activeEvent?.teams ? { ...battle, teams: activeEvent.teams, turn: activeEvent.turn }
+    : presentation.visibleCount < events.length ? frame.current : battle;
+  useEffect(() => { frame.current = displayBattle; }, [displayBattle]);
+  const displayPlayer = activePokemon(displayBattle, 0);
+  const displayOpponent = activePokemon(displayBattle, 1);
+  useBattleCries(displayPlayer.name, displayOpponent.name, sprites, criesEnabled);
+  useEffect(() => {
+    if (criesEnabled && activeEvent && ['move', 'damage', 'faint', 'switch'].includes(activeEvent.kind)) {
+      audio.play(activeEvent.kind, activeEvent.move?.type);
+    }
+    return () => audio.stop();
+  }, [activeEvent, audio, criesEnabled]);
+  useEffect(() => () => audio.close(), [audio]);
   const activeMove = moveForEvent(activeEvent, battle);
-  const playerDisplayHp = displayedHp(battle, events, presentation.activeIndex, 0);
-  const opponentDisplayHp = displayedHp(battle, events, presentation.activeIndex, 1);
-  const playerFainted = faintRevealed(battle, events, presentation.activeIndex, 0);
-  const opponentFainted = faintRevealed(battle, events, presentation.activeIndex, 1);
+  const playerDisplayHp = displayPlayer.hp;
+  const opponentDisplayHp = displayOpponent.hp;
+  const playerFainted = displayPlayer.hp === 0 && !(activeEvent?.kind === 'damage' && activeEvent.side === 0);
+  const opponentFainted = displayOpponent.hp === 0 && !(activeEvent?.kind === 'damage' && activeEvent.side === 1);
 
   useEffect(() => {
     if (presentation.busy) dialogueRef.current?.focus({ preventScroll: true });
@@ -375,30 +374,12 @@ export default function BattleScene() {
   const target = controllingSide === 0 ? opponent : player;
 
   const act = useCallback((action: Action) => {
-    if (action.kind === 'switch') {
-      setTransitioningSide(controllingSide);
-      if (switchTimer.current !== null) window.clearTimeout(switchTimer.current);
-      const commit = () => {
-        dispatch({ type: 'act', action });
-        setSwitching(false);
-        setShowOpponent(false);
-        setPreview(null);
-        setTransitioningSide(null);
-        switchTimer.current = null;
-      };
-      if (reducedMotion) commit();
-      else switchTimer.current = window.setTimeout(commit, 420);
-      return;
-    }
+    audio.unlock();
     dispatch({ type: 'act', action });
     setSwitching(false);
     setShowOpponent(false);
     setPreview(null);
-  }, [controllingSide, dispatch, reducedMotion]);
-
-  useEffect(() => () => {
-    if (switchTimer.current !== null) window.clearTimeout(switchTimer.current);
-  }, []);
+  }, [audio, dispatch]);
 
   const hints = useMemo(
     () => actor.moves.map((move) => moveHint(battle.chart, move, target.types)),
@@ -408,14 +389,14 @@ export default function BattleScene() {
   const pulse = (side: Side): 'attack' | 'hit' | undefined => {
     if (!activeEvent) return undefined;
     if (activeEvent.kind === 'move' && activeEvent.side === side) return 'attack';
-    if ((activeEvent.kind === 'damage' || activeEvent.kind === 'critical') && activeEvent.side === side) return 'hit';
+    if (activeEvent.kind === 'damage' && activeEvent.side === side) return 'hit';
     return undefined;
   };
 
   const controlledTeam = battle.teams[controllingSide];
   const canSwitch = controlledTeam.pokemon.some((member, slot) => slot !== controlledTeam.active && member.hp > 0);
   const waitingForHandover = localWaiting && !showOpponent;
-  const inputReady = !presentation.busy && !ended && !waitingForHandover && transitioningSide === null;
+  const inputReady = !presentation.busy && !ended && !waitingForHandover;
 
   const dialogue = (() => {
     if (presentation.busy) return { eyebrow: 'TURN RESOLUTION', text: activeEvent?.message ?? 'Resolving the turn…', tone: 'is-resolving' };
@@ -450,9 +431,9 @@ export default function BattleScene() {
       </div>
 
       <div className="arena-stage" aria-hidden={waitingForHandover}>
-        {activeMove && activeEvent && <MoveEffect move={activeMove} side={activeEvent.side} />}
-        <Combatant side={1} pulse={pulse(1)} fainted={opponentFainted} switchingOut={transitioningSide === 1} />
-        <Combatant side={0} pulse={pulse(0)} fainted={playerFainted} switchingOut={transitioningSide === 0} />
+        {activeMove && activeEvent && <MoveEffect key={presentation.activeIndex} move={activeMove} side={activeEvent.side} />}
+        <Combatant battle={displayBattle} side={1} pulse={pulse(1)} fainted={opponentFainted} />
+        <Combatant battle={displayBattle} side={0} pulse={pulse(0)} fainted={playerFainted} />
       </div>
 
       <div className="arena-hud">
@@ -467,16 +448,16 @@ export default function BattleScene() {
             type="button"
             className={`hud-toggle ${criesEnabled ? 'is-on' : ''}`}
             aria-pressed={criesEnabled}
-            aria-label={`${criesEnabled ? 'Mute' : 'Enable'} battle cries`}
+            aria-label={`${criesEnabled ? 'Mute' : 'Enable'} battle audio`}
             onClick={() => {
-              if (!criesEnabled) { setCriesEnabled(true); playCry(sprites[opponent.name]); window.setTimeout(() => playCry(sprites[player.name]), 140); }
-              else setCriesEnabled(false);
-            }}><span aria-hidden="true">{criesEnabled ? '◉' : '◌'}</span> Cries</button>
+              audio.unlock();
+              setCriesEnabled((value) => !value);
+            }}><span aria-hidden="true">{criesEnabled ? '◉' : '◌'}</span> Audio</button>
           <a className="hud-toggle hud-exit" href="#home">Exit</a>
         </div>
 
-        <StatusCapsule side={1} displayHp={opponentDisplayHp} />
-        <StatusCapsule side={0} displayHp={playerDisplayHp} />
+        <StatusCapsule battle={displayBattle} side={1} displayHp={opponentDisplayHp} />
+        <StatusCapsule battle={displayBattle} side={0} displayHp={playerDisplayHp} />
 
         {ended && !presentation.busy && <div className={`result-banner ${battle.winner === 0 || mode === 'local' ? 'is-victory' : ''}`} role="status"><span className="eyebrow">MATCH COMPLETE / {battle.turn} TURNS</span><strong>{battle.winner === 'draw' ? 'HONORS EVEN.' : mode === 'local' ? `${winnerName} WINS.` : battle.winner === 0 ? 'VICTORY.' : 'WELL FOUGHT.'}</strong><p>{battle.winner === 'draw' ? 'Two worthy rivals. One unforgettable match.' : battle.winner === 0 || mode === 'local' ? 'A great team. A greater performance.' : 'Every rival teaches you something. Come back stronger.'}</p></div>}
 
@@ -507,7 +488,7 @@ export default function BattleScene() {
         </section>
 
         <div className="battle-command">
-          {ended ? <div className="command-endcard">
+          {ended && !presentation.busy ? <div className="command-endcard">
             <button className="cmd-button cmd-fight" onClick={() => { dispatch({ type: 'restart', battle: initial, mode, difficulty: session.difficulty }); setMatch((value) => value + 1); setSwitching(false); setConfirmForfeit(false); }}>
               <span aria-hidden="true">↻</span> Rematch
             </button>

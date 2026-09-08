@@ -229,7 +229,9 @@ button:disabled,.primary-button:disabled{opacity:.5}
 .combatant-0{left:28%;bottom:8%;width:23%}.combatant-1{right:26%;bottom:28%;width:19%;height:34%}
 .combatant img{position:relative;height:100%;width:100%;object-fit:contain;object-position:center bottom;image-rendering:pixelated;filter:drop-shadow(0 0 10px #dae4b512);transition:opacity .5s,transform .5s}
 .combatant-shadow{position:absolute;bottom:-3%;left:12%;width:76%;height:13%;border-radius:50%;background:#06131166;filter:blur(5px);z-index:-1}
-.combatant.is-fainted img{opacity:0;transform:translateY(45px) scale(.7)}
+.combatant.is-fainted img{animation:battle-faint .8s ease-in forwards}.combatant.is-fainted .combatant-shadow{opacity:0;transition:opacity .8s}
+@keyframes battle-faint{0%{opacity:1;transform:translateY(0) scale(1)}40%{opacity:.6;transform:translateY(12px) scale(.95)}100%{opacity:0;transform:translateY(65px) scale(.65)}}
+@media(prefers-reduced-motion:reduce){.combatant.is-fainted img{animation:none;opacity:0}}
 .battle-sprite-fallback{font:700 28px var(--display);text-transform:uppercase;padding:30px}
 .move-effect{--move-color:#f4e9a5;position:absolute;z-index:4;top:42%;left:35%;width:78px;height:78px;pointer-events:none;filter:drop-shadow(0 0 12px color-mix(in srgb,var(--move-color),transparent 30%));animation:move-flight 1.1s cubic-bezier(.2,.72,.26,1) both}
 .move-effect-side-1{left:auto;right:31%;top:32%;animation-name:move-flight-foe}

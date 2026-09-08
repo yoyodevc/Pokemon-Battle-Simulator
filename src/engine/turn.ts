@@ -80,6 +80,7 @@ function executeMove(state: BattleState, events: BattleEvent[], side: Side, slot
   const move = selectedMove(state, side, slot);
   if (slot !== -1) move.pp -= 1;
   emit(state, events, 'move', side, `${label(attacker.name)} used ${label(move.name)}!`);
+  events[events.length - 1]!.move = structuredClone(move);
   const targetSide = move.target === 'self' ? side : otherSide(side);
   const defender = activePokemon(state, targetSide);
   if (defender.hp === 0 || !chance(state, accuracyChance(attacker, defender, move))) {

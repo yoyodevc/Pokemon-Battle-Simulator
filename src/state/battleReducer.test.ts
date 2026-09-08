@@ -22,6 +22,18 @@ describe('battle UI reducer', () => {
     expect(next.battle.teams[1].active).toBe(1);
     expect(next.battle.turn).toBe(1);
     expect(next.battle.phase).toBe('turn');
+    const faintIndex = next.events.findIndex((event) => event.kind === 'faint' && event.side === 1);
+    const switchIndex = next.events.findIndex((event) => event.kind === 'switch' && event.side === 1);
+    expect(faintIndex).toBeGreaterThanOrEqual(0);
+    expect(switchIndex).toBeGreaterThan(faintIndex);
+    const faint = next.events[faintIndex]!;
+    const replacement = next.events[switchIndex]!;
+    expect(faint.teams?.[1].active).toBe(0);
+    expect(faint.teams?.[1].pokemon[0]?.hp).toBe(0);
+    expect(replacement.teams?.[1].active).toBe(1);
+    expect(replacement.teams?.[1].pokemon[1]?.hp).toBeGreaterThan(0);
+    next.battle.teams[1].pokemon[1]!.hp = 0;
+    expect(replacement.teams?.[1].pokemon[1]?.hp).toBeGreaterThan(0);
   });
   it('holds for player replacement without charging a turn', () => {
     const battle = createBattle(demoTeams(), DEMO_CHART);
