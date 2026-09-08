@@ -328,6 +328,9 @@ export default function BattleScene() {
   const [confirmForfeit, setConfirmForfeit] = useState(false);
   const [criesEnabled, setCriesEnabled] = useState(true);
   const audio = useMemo(() => new BattleAudio(), []);
+  useEffect(() => {
+    void audio.prepare(initial.teams.flatMap(team => team.pokemon.flatMap(pokemon => pokemon.moves)));
+  }, [audio, initial]);
   const [logOpen, setLogOpen] = useState(false);
   const [preview, setPreview] = useState<Move | null>(null);
   const [match, setMatch] = useState(0);

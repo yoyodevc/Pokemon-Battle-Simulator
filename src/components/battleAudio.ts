@@ -1,4 +1,9 @@
 import type { Move } from '../engine/types';
+import manifestData from './moveAudioManifest.json';
+
+type SoundCue = { file: string; frame: number; volume: number; pitch: number };
+const manifest = manifestData as Record<string, SoundCue[]>;
+const moveKey = (name: string) => name.toLowerCase().replaceAll(' ', '-');
 
 /** Stable move-specific voices, scheduled on the audio clock without downloads. */
 export function moveSound(move: Move) {
@@ -22,6 +27,25 @@ export function moveSound(move: Move) {
 export class BattleAudio {
   private context: AudioContext | null = null;
   private voices = new Set<OscillatorNode>();
+  private recordings = new Map<string, AudioBuffer>();
+  private loading = new Set<string>();
+  private samples = new Set<AudioBufferSourceNode>();
+  async prepare(moves: Move[]) {
+    try { this.context ??= new AudioContext({ latencyHint: 'interactive' }); } catch { return; }
+    const context = this.context;
+    const files = new Set(moves.flatMap(move => (manifest[moveKey(move.name)] ?? []).map(cue => cue.file)));
+    await Promise.all([...files].map(async file => {
+      if (this.recordings.has(file) || this.loading.has(file)) return;
+      this.loading.add(file);
+      try {
+        const response = await fetch(`${import.meta.env.BASE_URL}audio/moves/${encodeURIComponent(file)}`);
+        if (!response.ok) return;
+        const buffer = await context.decodeAudioData(await response.arrayBuffer());
+        if (this.context === context) this.recordings.set(file, buffer);
+      } catch { /* Keep the synthesized fallback if a recording cannot load. */ }
+      finally { this.loading.delete(file); }
+    }));
+  }
   unlock() {
     try {
       this.context ??= new AudioContext({ latencyHint: 'interactive' });
@@ -31,6 +55,33 @@ export class BattleAudio {
   play(kind: string, move?: Move) {
     const context = this.context;
     if (!context || context.state !== 'running') return;
+    const cues = kind === 'move' && move ? manifest[moveKey(move.name)] : undefined;
+    if (cues?.length && cues.every(cue => this.recordings.has(cue.file))) {
+      const first = cues[0]!.frame;
+      const span = Math.max(1, cues[cues.length - 1]!.frame - first);
+      const start = context.currentTime;
+      // Adapt the source cue sequence to our 1.1-second move animation window.
+      for (const cue of cues) {
+        const source = context.createBufferSource();
+        const gain = context.createGain();
+        source.buffer = this.recordings.get(cue.file)!;
+        source.playbackRate.value = Math.max(0.25, cue.pitch / 100);
+        const offset = (cue.frame - first) * Math.min(1 / 20, 0.55 / span);
+        const at = start + offset;
+        const duration = Math.min(source.buffer.duration / source.playbackRate.value, 1.05 - offset);
+        const volume = Math.min(1, cue.volume / 100) * 0.22 / Math.sqrt(cues.length);
+        gain.gain.setValueAtTime(0, at);
+        gain.gain.linearRampToValueAtTime(volume, at + Math.min(0.008, duration / 3));
+        gain.gain.setValueAtTime(volume, at + Math.max(0.008, duration - 0.04));
+        gain.gain.linearRampToValueAtTime(0, at + duration);
+        source.connect(gain).connect(context.destination);
+        this.samples.add(source);
+        source.onended = () => { this.samples.delete(source); source.disconnect(); gain.disconnect(); };
+        source.start(at);
+        source.stop(at + duration);
+      }
+      return;
+    }
     if (kind === 'move' && move) {
       const profile = moveSound(move);
       const start = context.currentTime;
@@ -80,6 +131,6 @@ export class BattleAudio {
     oscillator.start(start);
     oscillator.stop(start + duration);
   }
-  stop() { for (const voice of this.voices) { voice.stop(); } this.voices.clear(); }
-  close() { this.stop(); void this.context?.close(); this.context = null; }
+  stop() { for (const voice of [...this.voices, ...this.samples]) { voice.stop(); } this.voices.clear(); this.samples.clear(); }
+  close() { this.stop(); void this.context?.close(); this.context = null; this.recordings.clear(); this.loading.clear(); }
 }
