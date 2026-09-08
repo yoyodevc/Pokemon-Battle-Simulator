@@ -16,6 +16,15 @@ export const DEFAULT_ENEMY_TEAM = ['blastoise', 'gengar', 'arcanine', 'venusaur'
 export const COMPETITIVE_PLAYER_TEAM = ['garchomp', 'starmie', 'corviknight', 'volcarona', 'dragapult', 'ferrothorn'];
 export const COMPETITIVE_ENEMY_TEAM = ['gliscor', 'heatran', 'toxapex', 'excadrill', 'clefable', 'tyranitar'];
 
+/** Competitive pool used to generate a fresh pair of balanced cores. */
+export const COMPETITIVE_CORE_POOL = [
+  'garchomp', 'starmie', 'corviknight', 'volcarona', 'dragapult', 'ferrothorn',
+  'gliscor', 'heatran', 'toxapex', 'excadrill', 'clefable', 'tyranitar',
+  'landorus-therian', 'rotom-wash', 'scizor', 'kingambit', 'gholdengo',
+  'dragonite', 'great-tusk', 'iron-valiant', 'alomomola', 'skarmory',
+  'blissey', 'slowking', 'weavile', 'serperior', 'azumarill', 'magnezone',
+];
+
 /** Curated viable pool for random battles; it intentionally excludes unevolved filler. */
 export const VIABLE_RANDOM_POOL = [
   'charizard', 'venusaur', 'blastoise', 'gengar', 'arcanine', 'dragonite', 'tyranitar',
@@ -43,6 +52,15 @@ export function createRandomTeams(availableNames: readonly string[], random: () 
   const pool = [...preferred, ...fallback];
   if (pool.length < 12) throw new Error('At least twelve Pokémon are required to randomize both teams.');
   const selected = shuffle(pool, random).slice(0, 12);
+  return [selected.slice(0, 6), selected.slice(6, 12)];
+}
+
+/** Creates two distinct, freshly shuffled teams from the competitive pool. */
+export function createCompetitiveTeams(availableNames: readonly string[], random: () => number = Math.random): [string[], string[]] {
+  const available = new Set(availableNames);
+  const preferred = COMPETITIVE_CORE_POOL.filter((name) => available.has(name));
+  if (preferred.length < 12) throw new Error('At least twelve competitive Pokémon are required to create both cores.');
+  const selected = shuffle(preferred, random).slice(0, 12);
   return [selected.slice(0, 6), selected.slice(6, 12)];
 }
 

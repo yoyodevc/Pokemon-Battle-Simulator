@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { COMPETITIVE_ENEMY_TEAM, COMPETITIVE_PLAYER_TEAM, createRandomTeams, DEFAULT_ENEMY_TEAM, DEFAULT_PLAYER_TEAM, loadPokemonPicker, type BattleMode, type PickerPokemon } from '../api/battleSetup';
+import { COMPETITIVE_CORE_POOL, createCompetitiveTeams, createRandomTeams, DEFAULT_ENEMY_TEAM, DEFAULT_PLAYER_TEAM, loadPokemonPicker, type BattleMode, type PickerPokemon } from '../api/battleSetup';
 import { CPU_DIFFICULTIES, type CpuDifficulty } from '../state/cpuStrategy';
 
 export interface BattleConfig { playerRoster: string[]; enemyRoster: string[]; mode: BattleMode; difficulty: CpuDifficulty }
@@ -48,14 +48,13 @@ export default function BattleSetup({ onStart, onCancel }: { onStart: (config: B
   const enemyLabel = mode === 'cpu' ? 'Rival team' : 'Player 2 team';
   const missing = [playerRoster.length < 6 ? `${6 - playerRoster.length} more for your team` : '', enemyRoster.length < 6 ? `${6 - enemyRoster.length} more for ${enemyLabel.toLowerCase()}` : ''].filter(Boolean).join(' and ');
   const availableNames = useMemo(() => picker.map((pokemon) => pokemon.name), [picker]);
-  const competitiveAvailable = COMPETITIVE_PLAYER_TEAM.every((name) => availableNames.includes(name))
-    && COMPETITIVE_ENEMY_TEAM.every((name) => availableNames.includes(name));
+  const competitiveAvailable = COMPETITIVE_CORE_POOL.filter((name) => availableNames.includes(name)).length >= 12;
   const applyCompetitive = () => {
-    const available = new Set(availableNames);
-    const player = COMPETITIVE_PLAYER_TEAM.filter((name) => available.has(name));
-    const enemy = COMPETITIVE_ENEMY_TEAM.filter((name) => available.has(name));
-    if (player.length === 6 && enemy.length === 6) {
+    try {
+      const [player, enemy] = createCompetitiveTeams(availableNames);
       setPlayerRoster(player); setEnemyRoster(enemy); setTeamSide(0);
+    } catch {
+      // The button stays disabled until enough competitive entries are loaded.
     }
   };
   const applyRandom = () => {

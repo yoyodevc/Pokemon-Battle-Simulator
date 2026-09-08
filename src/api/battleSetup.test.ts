@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createRandomTeams, VIABLE_RANDOM_POOL } from './battleSetup';
+import { createCompetitiveTeams, createRandomTeams, VIABLE_RANDOM_POOL } from './battleSetup';
 
 describe('team presets', () => {
   it('creates two distinct six-Pokémon teams from the viable pool', () => {
@@ -12,5 +12,16 @@ describe('team presets', () => {
 
   it('rejects an incomplete dex response instead of creating weak filler teams', () => {
     expect(() => createRandomTeams(['pikachu', 'magikarp'], () => 0.5)).toThrow(/twelve/i);
+  });
+});
+
+describe('createCompetitiveTeams', () => {
+  it('creates two distinct teams and changes with the random source', () => {
+    const available = [...VIABLE_RANDOM_POOL, 'starmie', 'corviknight', 'volcarona', 'dragapult', 'ferrothorn', 'gliscor', 'heatran', 'toxapex', 'clefable', 'landorus-therian', 'kingambit', 'gholdengo'];
+    const [firstPlayer, firstEnemy] = createCompetitiveTeams(available, () => 0.1);
+    const [secondPlayer, secondEnemy] = createCompetitiveTeams(available, () => 0.9);
+    expect(new Set([...firstPlayer, ...firstEnemy]).size).toBe(12);
+    expect(new Set([...secondPlayer, ...secondEnemy]).size).toBe(12);
+    expect([...firstPlayer, ...firstEnemy]).not.toEqual([...secondPlayer, ...secondEnemy]);
   });
 });
