@@ -350,7 +350,7 @@ export default function BattleScene() {
   useBattleCries(displayPlayer.name, displayOpponent.name, sprites, criesEnabled);
   useEffect(() => {
     if (criesEnabled && activeEvent && ['move', 'damage', 'faint', 'switch'].includes(activeEvent.kind)) {
-      audio.play(activeEvent.kind, activeEvent.move?.type);
+      audio.play(activeEvent.kind, activeEvent.move);
     }
     return () => audio.stop();
   }, [activeEvent, audio, criesEnabled]);
