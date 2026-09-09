@@ -5,6 +5,7 @@ import tailwindcss from '@tailwindcss/vite';
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
+    proxy: { '/api/league': 'http://127.0.0.1:3001' },
     host: '0.0.0.0',
     // LocalTunnel assigns a new subdomain over time. The leading dot allows
     // only LocalTunnel subdomains instead of disabling Vite host protection.

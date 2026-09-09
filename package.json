@@ -4,7 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/dev.mjs",
+    "dev:client": "vite",
+    "dev:server": "node --env-file-if-exists=.env --import ./server/register.mjs server/index.mjs",
+    "start": "node --env-file-if-exists=.env --import ./server/register.mjs server/index.mjs",
+    "test:league": "node --import ./server/register.mjs --test server/league.test.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
@@ -13,6 +17,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.116.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

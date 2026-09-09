@@ -13,6 +13,7 @@ export interface BattleContextValue {
 }
 
 const BattleContext = createContext<BattleContextValue | null>(null);
+export const BattleViewProvider = BattleContext.Provider;
 
 export function BattleProvider({ initial, sprites, mode, difficulty, children }: {
   initial: BattleState;

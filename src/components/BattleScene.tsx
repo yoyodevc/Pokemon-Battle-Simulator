@@ -289,7 +289,7 @@ function moveForEvent(event: BattleEvent | undefined, battle: BattleState): Move
   if (event.move) return event.move;
   const message = event.message.toLowerCase();
   return battle.teams[event.side].pokemon
-    .flatMap((pokemon) => pokemon.moves)
+    .flatMap((pokemon) => pokemon.moves ?? [])
     .find((move) => message.includes(label(move.name).toLowerCase())) ?? null;
 }
 
@@ -318,7 +318,7 @@ function MoveEffect({ move, side }: { move: Move; side: Side }) {
   </div>;
 }
 
-export default function BattleScene() {
+export default function BattleScene({ online }: { online?: { waiting: boolean; disabled: boolean; opponent: string; seconds: number; rematchPending: boolean; connected: boolean; replayEvent?: BattleEvent; replayIndex?: number } } = {}) {
   const { session, dispatch, initial, sprites } = useBattle();
   const { battle, events, mode, pendingPlayerAction } = session;
   const player = activePokemon(battle, 0);
@@ -329,20 +329,20 @@ export default function BattleScene() {
   const [criesEnabled, setCriesEnabled] = useState(true);
   const audio = useMemo(() => new BattleAudio(), []);
   useEffect(() => {
-    void audio.prepare(initial.teams.flatMap(team => team.pokemon.flatMap(pokemon => pokemon.moves)));
+    void audio.prepare(initial.teams.flatMap(team => team.pokemon.flatMap(pokemon => pokemon.moves ?? [])));
   }, [audio, initial]);
   const [logOpen, setLogOpen] = useState(false);
   const [preview, setPreview] = useState<Move | null>(null);
   const [match, setMatch] = useState(0);
   const dialogueRef = useRef<HTMLElement>(null);
-  const forced = battle.phase === 'switch';
+  const forced = battle.phase === 'switch' && (!online || player.hp <= 0);
   const ended = battle.phase === 'ended';
   const winnerName = battle.winner === 0 || battle.winner === 1 ? battle.teams[battle.winner].name : '';
   const localWaiting = mode === 'local' && pendingPlayerAction !== null;
   const reducedMotion = useReducedMotion();
   const elapsed = useElapsedClock(!ended, match);
   const presentation = useEventPresentation(events, reducedMotion);
-  const activeEvent = presentation.activeIndex >= 0 ? events[presentation.activeIndex] : undefined;
+  const activeEvent = online?.replayEvent ?? (presentation.activeIndex >= 0 ? events[presentation.activeIndex] : undefined);
   // Keep the last presented frame while React starts a newly appended batch.
   const frame = useRef(battle);
   const displayBattle = activeEvent?.teams ? { ...battle, teams: activeEvent.teams, turn: activeEvent.turn }
@@ -399,9 +399,10 @@ export default function BattleScene() {
   const controlledTeam = battle.teams[controllingSide];
   const canSwitch = controlledTeam.pokemon.some((member, slot) => slot !== controlledTeam.active && member.hp > 0);
   const waitingForHandover = localWaiting && !showOpponent;
-  const inputReady = !presentation.busy && !ended && !waitingForHandover;
+  const inputReady = !presentation.busy && !ended && !waitingForHandover && !online?.disabled && !online?.waiting;
 
   const dialogue = (() => {
+    if (online?.replayEvent) return { eyebrow: 'TURN RESOLUTION', text: online.replayEvent.message, tone: 'is-resolving' };
     if (presentation.busy) return { eyebrow: 'TURN RESOLUTION', text: activeEvent?.message ?? 'Resolving the turn…', tone: 'is-resolving' };
     if (ended) return {
       eyebrow: 'BATTLE COMPLETE',
@@ -409,6 +410,8 @@ export default function BattleScene() {
         : `${winnerName} ${winnerName === 'You' ? 'win' : 'wins'} the battle!`,
       tone: 'is-result',
     };
+    if (online && !online.connected) return { eyebrow: 'RECONNECTING', text: 'Reconnecting. Your battle is preserved.', tone: '' };
+    if (online?.waiting) return { eyebrow: 'TURN LOCKED', text: 'Waiting for your rival.', tone: '' };
     if (waitingForHandover) return { eyebrow: 'PASS & PLAY', text: 'Player 1 has locked in. Pass the device to Player 2.', tone: '' };
     if (forced) return { eyebrow: 'POKÉMON FAINTED', text: 'Choose the next Pokémon to send out.', tone: '' };
     if (switching) return { eyebrow: 'PARTY', text: 'Choose a Pokémon to send out.', tone: '' };
@@ -434,16 +437,16 @@ export default function BattleScene() {
       </div>
 
       <div className="arena-stage" aria-hidden={waitingForHandover}>
-        {activeMove && activeEvent && <MoveEffect key={presentation.activeIndex} move={activeMove} side={activeEvent.side} />}
+        {activeMove && activeEvent && <MoveEffect key={online?.replayIndex ?? presentation.activeIndex} move={activeMove} side={activeEvent.side} />}
         <Combatant battle={displayBattle} side={1} pulse={pulse(1)} fainted={opponentFainted} />
         <Combatant battle={displayBattle} side={0} pulse={pulse(0)} fainted={playerFainted} />
       </div>
 
       <div className="arena-hud">
         <div className="hud-bar">
-          <span className="hud-match">{mode === 'cpu' ? `SINGLE BATTLE · ${session.difficulty.toUpperCase()} CPU` : 'SINGLE BATTLE · PASS & PLAY'}</span>
+          <span className="hud-match">{online ? `ONLINE DUEL · ${online.opponent}` : mode === 'cpu' ? `SINGLE BATTLE · ${session.difficulty.toUpperCase()} CPU` : 'SINGLE BATTLE · PASS & PLAY'}</span>
           <span className="hud-turn">TURN <strong>{String(battle.turn).padStart(2, '0')}</strong></span>
-          <span className="hud-clock"><small>ELAPSED</small><strong>{elapsed}</strong></span>
+          <span className="hud-clock"><small>{online ? 'REMAINING' : 'ELAPSED'}</small><strong>{online ? `${online.seconds}s` : elapsed}</strong></span>
           <button type="button" className={`hud-toggle ${logOpen ? 'is-on' : ''}`} aria-pressed={logOpen} onClick={() => setLogOpen((value) => !value)}>
             <span aria-hidden="true">▤</span> Log
           </button>
@@ -456,7 +459,7 @@ export default function BattleScene() {
               audio.unlock();
               setCriesEnabled((value) => !value);
             }}><span aria-hidden="true">{criesEnabled ? '◉' : '◌'}</span> Audio</button>
-          <a className="hud-toggle hud-exit" href="#home">Exit</a>
+          <a className="hud-toggle hud-exit" href={online ? '#league' : '#home'}>Exit</a>
         </div>
 
         <StatusCapsule battle={displayBattle} side={1} displayHp={opponentDisplayHp} />
@@ -492,10 +495,10 @@ export default function BattleScene() {
 
         <div className="battle-command">
           {ended && !presentation.busy ? <div className="command-endcard">
-            <button className="cmd-button cmd-fight" onClick={() => { dispatch({ type: 'restart', battle: initial, mode, difficulty: session.difficulty }); setMatch((value) => value + 1); setSwitching(false); setConfirmForfeit(false); }}>
-              <span aria-hidden="true">↻</span> Rematch
+            <button className="cmd-button cmd-fight" disabled={online?.disabled || online?.rematchPending} onClick={() => { dispatch({ type: 'restart', battle: initial, mode, difficulty: session.difficulty }); setMatch((value) => value + 1); setSwitching(false); setConfirmForfeit(false); }}>
+              <span aria-hidden="true">↻</span> {online?.rematchPending ? 'Rematch requested' : 'Rematch'}
             </button>
-            <a className="cmd-button cmd-run" href="#home"><span aria-hidden="true">⌂</span> Home</a>
+            <a className="cmd-button cmd-run" href={online ? '#league' : '#home'}><span aria-hidden="true">⌂</span> {online ? 'Lobby' : 'Home'}</a>
           </div>
           : waitingForHandover ? <div className="command-endcard">
             <button className="cmd-button cmd-fight" onClick={() => setShowOpponent(true)}><span aria-hidden="true">▶</span> Player 2 ready</button>
