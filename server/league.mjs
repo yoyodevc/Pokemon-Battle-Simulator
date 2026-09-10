@@ -1,7 +1,7 @@
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { createBattle, legalActions, resolveTurn } from '../src/engine/turn.ts';
 
-export const blankData = () => ({ users: {}, sessions: {}, friends: {}, blocks: {}, challenges: {}, matches: {} });
+export const blankData = () => ({ users: {}, sessions: {}, friends: {}, blocks: {}, challenges: {}, matches: {}, teams: {} });
 const pair = (a, b) => [a, b].sort().join(':');
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
 const same = (a, b) => a.kind === b.kind && (a.kind === 'forfeit' || a.slot === b.slot);

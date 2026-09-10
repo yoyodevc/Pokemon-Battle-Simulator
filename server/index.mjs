@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { resolve, dirname, extname, sep } from 'node:path';
 import { League, blankData } from './league.mjs';
 import { loadBattle } from '../src/api/battleSetup.ts';
+import { savedTeams } from './teams.mjs';
 
 const port = Number(process.env.LEAGUE_PORT || 3001);
 const dbPath = resolve(process.env.LEAGUE_DATABASE || '.league/league.sqlite');
@@ -71,6 +72,13 @@ const server = createServer(async (req, res) => {
     if (origin && !(process.env.LEAGUE_ORIGINS || 'http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174').split(',').includes(origin)) throw Object.assign(new Error('Origin not allowed.'), { status: 403 });
     const s = session(req), path = url.pathname.slice('/api/league/'.length);
     if (req.method === 'GET' && path === 'config') return json(res, 200, { supabaseUrl, supabaseKey, accounts: !!(supabaseUrl && supabaseKey) });
+    if (req.method === 'GET' && path === 'poll') {
+      if (!s) return json(res, 401, { error: 'Session expired. Sign in again.' });
+      league.touch(s.userId, url.searchParams.get('away') === 'true'); league.tick();
+      return json(res, 200, { lobby: league.snapshot(s.userId),
+        match: url.searchParams.get('match') ? league.viewMatch(s.userId, url.searchParams.get('match')) : null,
+        invitation: url.searchParams.get('invite') ? league.invitation(s.userId, url.searchParams.get('invite')) : null });
+    }
     if (req.method === 'GET' && path === 'events') {
       if (!s) return json(res, 401, { error: 'Sign in or continue as guest.' });
       if ([...streams].filter(x => x.session.userId === s.userId).length >= 5) return json(res, 429, { error: 'Too many open connections.' });
@@ -112,6 +120,7 @@ const server = createServer(async (req, res) => {
     switch (path) {
       case 'logout': delete data.sessions[s.hash]; league.commit(); res.setHeader('Set-Cookie', 'league_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); break;
       case 'heartbeat': break;
+      case 'teams': result = savedTeams(data, id, input); league.commit(); break;
       case 'profile': league.edit(id, input); break;
       case 'friends': league.friend(id, input); break;
       case 'search': result = { trainers: league.search(id, input.query) }; break;

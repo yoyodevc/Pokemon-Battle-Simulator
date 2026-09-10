@@ -80,25 +80,25 @@ export default function LeaguePage({ route }: { route: string }) {
 
   useEffect(() => {
     if (!lobby) return;
-    const events = new EventSource(`/api/league/events${matchId ? `?match=${encodeURIComponent(matchId)}` : inviteId ? `?invite=${encodeURIComponent(inviteId)}` : ''}`);
-    events.onopen = () => setConnected(true);
-    events.onerror = () => setConnected(false);
-    events.onmessage = e => {
-      const data = JSON.parse(e.data) as { lobby: Lobby; match: Match | null; invitation: Invitation | null };
-      const incoming = data.lobby.challenges.filter(c => c.to?.id === data.lobby.user.id);
-      if (lastChallenges.current && incoming.some(c => !lastChallenges.current!.has(c.id))) setNotice('A trainer challenged you to a duel.');
-      lastChallenges.current = new Set(incoming.map(c => c.id));
-      setLobby(data.lobby); setMatch(data.match);
-      if (data.invitation) setInvitation(data.invitation);
-      if (data.match?.next) goMatch(data.match.next);
+    let live = true, timer: number;
+    const poll = async () => {
+      try {
+        const query = new URLSearchParams({ away: String(document.hidden), ...(matchId ? { match: matchId } : inviteId ? { invite: inviteId } : {}) });
+        const data = await request<{ lobby: Lobby; match: Match | null; invitation: Invitation | null }>(`poll?${query}`);
+        if (!live) return;
+        setConnected(true);
+        const incoming = data.lobby.challenges.filter(c => c.to?.id === data.lobby.user.id);
+        if (lastChallenges.current && incoming.some(c => !lastChallenges.current!.has(c.id))) setNotice('A trainer challenged you to a duel.');
+        lastChallenges.current = new Set(incoming.map(c => c.id));
+        setLobby(data.lobby); setMatch(data.match);
+        if (data.invitation) setInvitation(data.invitation);
+        if (data.match?.next) goMatch(data.match.next);
+      } catch (e) {
+        if (live) { setConnected(false); if (e instanceof LeagueError && e.status === 401) setLobby(null); }
+      } finally { if (live) timer = window.setTimeout(() => void poll(), 3000); }
     };
-    const heartbeat = () => { void request('heartbeat', { away: document.hidden }).catch(e => {
-      setConnected(false); if (e instanceof LeagueError && e.status === 401) setLobby(null);
-    }); };
-    heartbeat();
-    const timer = window.setInterval(heartbeat, 10000);
-    document.addEventListener('visibilitychange', heartbeat);
-    return () => { events.close(); clearInterval(timer); document.removeEventListener('visibilitychange', heartbeat); };
+    void poll();
+    return () => { live = false; clearTimeout(timer); };
   }, [lobby?.user.id, matchId, inviteId]);
 
   useEffect(() => {
