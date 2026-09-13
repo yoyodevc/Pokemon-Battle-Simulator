@@ -90,7 +90,7 @@ export default function LeaguePage({ route }: { route: string }) {
         if (data.match?.next) goMatch(data.match.next);
       } catch (e) {
         if (live) { setConnected(false); setConnectionError(message(e)); if (e instanceof LeagueError && e.status === 401) setLobby(null); }
-      } finally { if (live) timer = window.setTimeout(() => void poll(), 3000); }
+      } finally { if (live) timer = window.setTimeout(() => void poll(), 10000); }
     };
     void poll();
     return () => { live = false; clearTimeout(timer); };
