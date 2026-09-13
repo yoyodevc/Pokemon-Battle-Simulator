@@ -10,6 +10,7 @@ import SwitchMenu from './SwitchMenu';
 import BattleLog from './BattleLog';
 import ForfeitDialog from './ForfeitDialog';
 import { BattleAudio } from './battleAudio';
+import { useBattleMusic } from './battleMusic';
 
 const STATUS_LABELS: Record<Status, string> = {
   burn: 'BRN', poison: 'PSN', toxic: 'TOX', paralysis: 'PAR', sleep: 'SLP', freeze: 'FRZ',
@@ -327,6 +328,10 @@ export default function BattleScene({ online }: { online?: { waiting: boolean; d
   const [showOpponent, setShowOpponent] = useState(false);
   const [confirmForfeit, setConfirmForfeit] = useState(false);
   const [criesEnabled, setCriesEnabled] = useState(true);
+  const [musicVolume, setMusicVolume] = useState(() => {
+    const saved = Number(localStorage.getItem('battle-music-volume') ?? '.25');
+    return Number.isFinite(saved) ? Math.max(0, Math.min(1, saved)) : .25;
+  });
   const audio = useMemo(() => new BattleAudio(), []);
   useEffect(() => {
     void audio.prepare(initial.teams.flatMap(team => team.pokemon.flatMap(pokemon => pokemon.moves ?? [])));
@@ -337,6 +342,7 @@ export default function BattleScene({ online }: { online?: { waiting: boolean; d
   const dialogueRef = useRef<HTMLElement>(null);
   const forced = battle.phase === 'switch' && (!online || player.hp <= 0);
   const ended = battle.phase === 'ended';
+  useBattleMusic(criesEnabled && !ended, musicVolume);
   const winnerName = battle.winner === 0 || battle.winner === 1 ? battle.teams[battle.winner].name : '';
   const localWaiting = mode === 'local' && pendingPlayerAction !== null;
   const reducedMotion = useReducedMotion();
@@ -459,6 +465,9 @@ export default function BattleScene({ online }: { online?: { waiting: boolean; d
               audio.unlock();
               setCriesEnabled((value) => !value);
             }}><span aria-hidden="true">{criesEnabled ? '◉' : '◌'}</span> Audio</button>
+          <label className="hud-toggle" title="Pokémon Diamond/Pearl/Platinum Trainer Battle Music; loops from 0:04">Music<input type="range" min="0" max="1" step=".05" value={musicVolume} aria-label="Battle music volume" onChange={event => {
+            const value = Number(event.target.value); setMusicVolume(value); localStorage.setItem('battle-music-volume', String(value));
+          }} /></label>
           <a className="hud-toggle hud-exit" href={online ? '#league' : '#home'}>Exit</a>
         </div>
 

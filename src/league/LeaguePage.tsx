@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { auth, avatar, LeagueError, request, type Config, type Invitation, type Lobby, type Match, type Trainer } from './client';
+import { auth, authMessage, avatar, confirmationRedirect, LeagueError, request, restoreLeagueSession, type Config, type Invitation, type Lobby, type Match, type Trainer } from './client';
 import OnlineBattle from './OnlineBattle';
 import ReplayViewer from './ReplayViewer';
 import ChallengeInbox from './ChallengeInbox';
@@ -22,12 +22,15 @@ export default function LeaguePage({ route }: { route: string }) {
   const [invitation, setInvitation] = useState<Invitation | null>(null);
   const [tab, setTab] = useState<Tab>('lobby');
   const [error, setError] = useState('');
+  const [connectionError, setConnectionError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [connectionAttempt, setConnectionAttempt] = useState(0);
   const [connected, setConnected] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'register' | 'reset' | 'password'>('login');
+  const [email, setEmail] = useState('');
   const [search, setSearch] = useState('');
   const [results, setResults] = useState<Trainer[]>([]);
   const [name, setName] = useState('');
@@ -46,29 +49,18 @@ export default function LeaguePage({ route }: { route: string }) {
 
   useEffect(() => {
     let live = true;
+    setLoading(true);
     void (async () => {
       try {
         const c = await request<Config>('config'); if (!live) return; setConfig(c);
-        let snapshot: Lobby | null = null;
-        try { snapshot = await request<Lobby>('session'); } catch (e) { if (!(e instanceof LeagueError && e.status === 401)) throw e; }
-        if (c.accounts) {
-          const supabase = auth(c);
-          const { data: { session } } = await supabase.auth.getSession();
-          if (session) {
-            try {
-              snapshot = await request<Lobby>('auth', { token: session.access_token });
-              if (new URLSearchParams(location.search).has('recovery')) { setAuthMode('password'); setAccountOpen(true); }
-            } catch {
-              await supabase.auth.signOut();
-            }
-          }
-        }
+        const snapshot = await restoreLeagueSession(c);
+        if (live && snapshot && new URLSearchParams(location.search).has('recovery')) { setAuthMode('password'); setAccountOpen(true); }
         if (live) { setError(''); setLobby(snapshot); }
       } catch (e) { if (live) setError(message(e)); }
       finally { if (live) setLoading(false); }
     })();
     return () => { live = false; };
-  }, []);
+  }, [connectionAttempt]);
 
   useEffect(() => {
     if (!config?.accounts) return;
@@ -86,15 +78,18 @@ export default function LeaguePage({ route }: { route: string }) {
         const query = new URLSearchParams({ away: String(document.hidden), ...(matchId ? { match: matchId } : inviteId ? { invite: inviteId } : {}) });
         const data = await request<{ lobby: Lobby; match: Match | null; invitation: Invitation | null }>(`poll?${query}`);
         if (!live) return;
-        setConnected(true);
+        setConnected(true); setConnectionError('');
         const incoming = data.lobby.challenges.filter(c => c.to?.id === data.lobby.user.id);
         if (lastChallenges.current && incoming.some(c => !lastChallenges.current!.has(c.id))) setNotice('A trainer challenged you to a duel.');
         lastChallenges.current = new Set(incoming.map(c => c.id));
         setLobby(data.lobby); setMatch(data.match);
-        if (data.invitation) setInvitation(data.invitation);
+        if (data.invitation) {
+          setInvitation(data.invitation);
+          if (data.invitation.matchId) goMatch(data.invitation.matchId);
+        }
         if (data.match?.next) goMatch(data.match.next);
       } catch (e) {
-        if (live) { setConnected(false); if (e instanceof LeagueError && e.status === 401) setLobby(null); }
+        if (live) { setConnected(false); setConnectionError(message(e)); if (e instanceof LeagueError && e.status === 401) setLobby(null); }
       } finally { if (live) timer = window.setTimeout(() => void poll(), 3000); }
     };
     void poll();
@@ -114,21 +109,34 @@ export default function LeaguePage({ route }: { route: string }) {
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget), email = String(form.get('email') || ''), password = String(form.get('password') || '');
+    const password = String(new FormData(event.currentTarget).get('password') || '');
     await run(async () => {
       const client = auth(config!);
+      const fail = (e: unknown) => { throw new Error(authMessage(e)); };
       if (authMode === 'reset') {
         const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo: `${location.origin}/?recovery=1#league` });
-        if (error) throw error; setNotice('Check your email for a password reset link.'); return;
+        if (error) fail(error); setNotice('Check your email for a password reset link.'); return;
       }
       if (authMode === 'password') {
         const { error } = await client.auth.updateUser({ password });
-        if (error) throw error; setNotice('Password updated.'); setAccountOpen(false); return;
+        if (error) fail(error); setNotice('Password updated.'); setAccountOpen(false); return;
       }
-      const result = authMode === 'register' ? await client.auth.signUp({ email, password, options: { emailRedirectTo: `${location.origin}/#league` } }) : await client.auth.signInWithPassword({ email, password });
-      if (result.error) throw result.error;
-      if (!result.data.session) { setNotice('Check your email to confirm your account, then sign in.'); return; }
+      const result = authMode === 'register' ? await client.auth.signUp({ email, password, options: { emailRedirectTo: confirmationRedirect() } }) : await client.auth.signInWithPassword({ email, password });
+      if (result.error) fail(result.error);
+      // A sign-up for an address that already exists comes back with no
+      // identities rather than an error, so say so instead of promising an email.
+      if (authMode === 'register' && result.data.user?.identities?.length === 0) {
+        setAuthMode('login'); setNotice('That email already has an account. Sign in below.'); return;
+      }
+      if (!result.data.session) { setNotice('Check your email to confirm your account, then sign in. The link opens this page.'); return; }
       setLobby(await request<Lobby>('auth', { token: result.data.session.access_token })); setAccountOpen(false); setNotice('Welcome to the League.');
+    });
+  }
+  async function resendConfirmation() {
+    await run(async () => {
+      const { error } = await auth(config!).auth.resend({ type: 'signup', email, options: { emailRedirectTo: confirmationRedirect() } });
+      if (error) throw new Error(authMessage(error));
+      setNotice('Confirmation email sent again. Check your inbox and spam folder.');
     });
   }
   async function respond(id: string, action: string) {
@@ -150,21 +158,21 @@ export default function LeaguePage({ route }: { route: string }) {
     {accountOpen && error && <p className="lg-alert" role="alert">{error}</p>}
     {accountOpen && notice && <p className="lg-notice" role="status">{notice}</p>}
     {!config?.accounts && <p className="lg-muted">Account sign-in is not available on this server yet. Guest battles are ready to play.</p>}
-    {authMode !== 'password' && <label>Email<input name="email" type="email" autoComplete="email" required disabled={!config?.accounts} /></label>}
+    {authMode !== 'password' && <label>Email<input name="email" type="email" autoComplete="email" required disabled={!config?.accounts} value={email} onChange={e => setEmail(e.target.value)} /></label>}
     {authMode !== 'reset' && <label>Password<input name="password" type="password" minLength={8} autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} required disabled={!config?.accounts} /></label>}
     <button className="lg-primary" disabled={busy || !config?.accounts}>{busy ? 'Please wait...' : authMode === 'register' ? 'Create account' : authMode === 'reset' ? 'Send reset link' : authMode === 'password' ? 'Update password' : 'Sign in'}</button>
-    <div className="lg-inline">{authMode !== 'password' && <><button type="button" className="lg-link" onClick={() => setAuthMode(authMode === 'register' ? 'login' : 'register')}>{authMode === 'register' ? 'Already a member? Sign in' : 'Create an account'}</button><button type="button" className="lg-link" onClick={() => setAuthMode('reset')}>Forgot password?</button></>}</div>
+    <div className="lg-inline">{authMode !== 'password' && <><button type="button" className="lg-link" onClick={() => setAuthMode(authMode === 'register' ? 'login' : 'register')}>{authMode === 'register' ? 'Already a member? Sign in' : 'Create an account'}</button><button type="button" className="lg-link" onClick={() => setAuthMode('reset')}>Forgot password?</button></>}{authMode !== 'password' && config?.accounts && <button type="button" className="lg-link" disabled={busy || !email} onClick={() => void resendConfirmation()}>Resend confirmation email</button>}</div>
   </form>;
 
   if (lobby && replay) return <ReplayViewer key={replay.id} match={replay} user={lobby.user} onClose={() => setReplay(null)} />;
   if (lobby && match && (match.status === 'battle' || match.status === 'ended')) return <>
-    {error && <div className="lg-alert" role="alert">{error}</div>}
+    {(error || connectionError) && <div className="lg-alert" role="alert">{error || connectionError}</div>}
     <OnlineBattle match={match} user={lobby.user} busy={busy} connected={connected} run={run} onNotice={setNotice} />
   </>;
 
   return <main id="main-content" className={`league${matchId ? ' lg-in-match' : ''}`}>
     <div className="lg-heading"><div><span className="lg-kicker">ONLINE / STANDARD 6V6</span><h1>Pokemon <span className="lg-heading-dot">League.</span></h1></div><div className="lg-heading-meta"><span>YOUR NEXT RIVAL AWAITS</span><a className="lg-link" href="#battle">Practice vs CPU &#8599;</a></div></div>
-    {error && <div className="lg-alert" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError('')}>&times;</button></div>}
+    {(error || connectionError) && <div className="lg-alert" role="alert"><span>{error || connectionError}</span>{!lobby && <button disabled={loading || busy} onClick={() => setConnectionAttempt(value => value + 1)}>Retry connection</button>}<button aria-label="Dismiss error" onClick={() => { setError(''); setConnectionError(''); }}>&times;</button></div>}
     {notice && <div className="lg-notice" role="status"><span>{notice}</span><button aria-label="Dismiss notification" onClick={() => setNotice('')}>&times;</button></div>}
     {!matchId && <ChallengeInbox invitations={incoming} busy={busy || !!lobby?.activeMatch} onRespond={respond} />}
     {loading ? <div className="lg-empty" role="status">Connecting to the League...</div> : !lobby ? <div className="lg-entry">

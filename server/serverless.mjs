@@ -38,6 +38,8 @@ export async function handle(request, store, { ip = 'unknown', loader = loadBatt
       if (!supabaseUrl || !supabaseKey) fail('Account sign-in is not configured.', 503);
       if (typeof input.token !== 'string' || input.token.length > 8192) fail('Invalid sign-in token.', 401);
       const response = await fetch(`${supabaseUrl}/auth/v1/user`, { headers: { apikey: supabaseKey, Authorization: `Bearer ${input.token}` }, signal: AbortSignal.timeout(10000) });
+      if (response.status === 429) fail('The accounts service is busy. Please try again shortly.', 429);
+      if (response.status >= 500) fail('The accounts service is temporarily unavailable. Please try again.', 503);
       if (!response.ok) fail('Sign-in expired. Please sign in again.', 401);
       verified = await response.json();
       if (!verified.id || !verified.email_confirmed_at) fail('Verify your email before signing in.', 401);
@@ -71,7 +73,7 @@ export async function handle(request, store, { ip = 'unknown', loader = loadBatt
         id = userId;
       };
       if (path === 'guest' && !id) issue(league.createUser().id);
-      if (path === 'auth') issue(league.account(verified.id, id).id);
+      if (path === 'auth' && (!id || data.users[id]?.authId !== verified.id)) issue(league.account(verified.id, id).id);
       if (!id) fail('Session expired. Sign in again.', 401);
       league.touch(id, path === 'poll' ? url.searchParams.get('away') === 'true' : !!input.away);
       league.tick();
@@ -100,6 +102,10 @@ export async function handle(request, store, { ip = 'unknown', loader = loadBatt
     });
     return json(result.status, result.body, result.cookie ? { 'Set-Cookie': result.cookie } : {});
   } catch (error) {
+    // Unexpected failures are otherwise invisible in function logs, which makes
+    // storage and credential problems look like generic outages to the browser.
+    if (!error.status && !(error instanceof SyntaxError)) console.error('League request failed:', error);
+    else if (error.detail) console.error('League request failed:', error.message, error.detail);
     return json(error.status || (error instanceof SyntaxError ? 400 : 503), { error: error.status ? error.message : error instanceof SyntaxError ? 'Invalid JSON.' : 'Unable to complete this request. Please try again.' });
   }
 }

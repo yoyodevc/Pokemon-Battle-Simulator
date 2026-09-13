@@ -28,11 +28,51 @@ export async function request<T>(path: string, body?: unknown): Promise<T> {
   if (!response.ok) throw new LeagueError(result.error || 'Request failed.', response.status);
   return result as T;
 }
+// Supabase reports sign-in problems as short codes. Surfacing them verbatim
+// ("Email not confirmed") hides what the trainer has to do next, so map the
+// ones this form can actually produce onto an instruction.
+const AUTH_MESSAGES: Record<string, string> = {
+  email_not_confirmed: 'Confirm your email address first. Open the link we sent you, or resend it below.',
+  email_address_invalid: 'That email address was rejected. Use a real inbox you can receive mail at.',
+  over_email_send_rate_limit: 'The confirmation email limit has been reached. Try again later; requesting more emails will not bypass the limit.',
+  email_address_not_authorized: 'This server cannot send confirmation emails to your address yet. You can play as a guest while the site owner configures email delivery.',
+  over_request_rate_limit: 'Too many attempts. Wait a minute, then try again.',
+  invalid_credentials: 'That email and password do not match an account.',
+  weak_password: 'Choose a longer password with a mix of characters.',
+  user_already_exists: 'That email already has an account. Sign in instead.',
+  signup_disabled: 'New accounts are turned off on this League server.',
+  validation_failed: 'Enter both an email address and a password.',
+};
+export function authMessage(error: unknown): string {
+  const code = (error as { code?: string } | null)?.code;
+  if (code && AUTH_MESSAGES[code]) return AUTH_MESSAGES[code];
+  const text = error instanceof Error ? error.message : '';
+  return text.includes('Failed to fetch')
+    ? 'Could not reach the accounts service. Check your connection and try again.'
+    : text || 'Sign-in failed. Please try again.';
+}
+
 let client: SupabaseClient | null = null;
 export function auth(config: Config): SupabaseClient {
   if (!config.accounts) throw new Error('Account sign-in is not configured yet. You can play as a guest.');
   client ??= createClient(config.supabaseUrl, config.supabaseKey, { auth: { flowType: 'pkce' } });
   return client;
+}
+export async function restoreLeagueSession(config: Config): Promise<Lobby | null> {
+  if (config.accounts) {
+    const { data: { session }, error } = await auth(config).auth.getSession();
+    if (error) throw new Error(authMessage(error));
+    if (session) {
+      try { return await request<Lobby>('auth', { token: session.access_token }); }
+      catch (error) { if (!(error instanceof LeagueError && error.status === 401)) throw error; }
+    }
+  }
+  try { return await request<Lobby>('session'); }
+  catch (error) { if (error instanceof LeagueError && error.status === 401) return null; throw error; }
+}
+export function confirmationRedirect(): string {
+  const route = /^#(?:invite|match)\/[a-zA-Z0-9-]+$/.test(location.hash) ? location.hash : '#league';
+  return `${location.origin}/${route}`;
 }
 export const avatar = (id: number) => new URL(`../../preview/sprites/${id}.gif`, import.meta.url).href;
 const localIds: Record<string, number> = { pikachu: 25, charizard: 6, blastoise: 9, venusaur: 3, gengar: 94,

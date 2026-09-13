@@ -6,7 +6,13 @@ import SiteHeader from './components/SiteHeader';
 import LeaguePage from './league/LeaguePage';
 
 export default function App() {
-  const [hash, setHash] = useState(() => window.location.hash);
+  const [hash, setHash] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!window.location.hash && (params.has('code') || params.has('recovery') || params.has('error'))) {
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#league`);
+    }
+    return window.location.hash;
+  });
   useEffect(() => {
     const change = () => {
       setHash(window.location.hash);

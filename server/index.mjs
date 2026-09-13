@@ -109,6 +109,8 @@ const server = createServer(async (req, res) => {
       if (!supabaseUrl || !supabaseKey) return json(res, 503, { error: 'Account sign-in has not been configured. Guest battles are available.' });
       if (typeof input.token !== 'string' || input.token.length > 8192) return json(res, 401, { error: 'Invalid sign-in token.' });
       const response = await fetch(`${supabaseUrl}/auth/v1/user`, { headers: { apikey: supabaseKey, Authorization: `Bearer ${input.token}` }, signal: AbortSignal.timeout(10000) });
+      if (response.status === 429) return json(res, 429, { error: 'The accounts service is busy. Please try again shortly.' });
+      if (response.status >= 500) return json(res, 503, { error: 'The accounts service is temporarily unavailable. Please try again.' });
       if (!response.ok) return json(res, 401, { error: 'Sign-in expired. Please sign in again.' });
       const verified = await response.json();
       if (!verified.id || !verified.email_confirmed_at) return json(res, 401, { error: 'Verify your email before signing in.' });

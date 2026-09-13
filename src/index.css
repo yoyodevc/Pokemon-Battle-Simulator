@@ -264,6 +264,7 @@ button:disabled,.primary-button:disabled{opacity:.5}
 .hud-turn{font-size:9px;white-space:nowrap}.hud-turn strong{font:700 24px var(--display);color:var(--gold);margin-left:6px}
 .hud-clock{display:flex;align-items:center;gap:8px}.hud-clock small{font-size:8px;color:#9ba99d}.hud-clock strong{font:500 13px monospace}
 .hud-toggle{min-height:40px;display:inline-flex;align-items:center;gap:6px;color:#aebcb1;font-size:10px}
+.hud-toggle input[type="range"]{width:clamp(32px,8vw,64px);min-width:0;accent-color:var(--gold)}
 .hud-toggle.is-on{color:var(--gold)}.hud-toggle:hover{color:white}.hud-exit{border-left:1px solid #ffffff26;padding-left:15px}
 .status-capsule{position:absolute;width:280px;background:var(--paper);color:var(--ink);border-radius:3px;box-shadow:0 8px 24px #0004;z-index:2}
 .capsule-foe{right:6%;top:90px}.capsule-ally{left:5%;bottom:260px}

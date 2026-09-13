@@ -5,7 +5,7 @@ import { blankData } from './league.mjs';
 import { createBattle } from '../src/engine/turn.ts';
 import { emptyStages } from '../src/engine/stats.ts';
 
-function setup() {
+function setup(customLoader) {
   let version = 0, payload = { ...blankData(), presence: {}, limits: {} };
   const store = {
     async read() { return { version, payload: structuredClone(payload) }; },
@@ -24,10 +24,10 @@ function setup() {
     const response = await handle(new Request(`https://league.example/api/league/${path}`, {
       method: body === undefined ? 'GET' : 'POST', headers: { cookie, origin, 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    }), store, { ip: '127.0.0.1', loader });
+    }), store, { ip: '127.0.0.1', loader: customLoader || loader });
     return { status: response.status, cookie: response.headers.get('set-cookie')?.split(';')[0], body: await response.json() };
   };
-  return { store, call, roster };
+  return { store, call, roster, loader };
 }
 
 test('concurrent guests survive cold requests; logout and origin protections hold', async () => {
@@ -90,4 +90,52 @@ test('database failure never issues an unpersisted guest cookie', async () => {
   }), { async read() { return { version: 0, payload: blankData() }; }, async write() { throw new Error('offline'); } });
   assert.equal(response.status, 503);
   assert.equal(response.headers.get('set-cookie'), null);
+});
+
+test('shareable invitations survive guests joining and polls during team loading', async () => {
+  const { loader } = setup();
+  let started, release;
+  const loading = new Promise(resolve => { started = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  let loads = 0;
+  const { call, roster } = setup(async (...args) => { loads++; started(); await gate; return loader(...args); });
+  const a = await call('guest', {});
+  const invitation = await call('challenge', {}, a.cookie);
+  const b = await call('guest', {});
+  const opened = await call('invitation', { id: invitation.body.id }, b.cookie);
+  assert.equal(opened.status, 200);
+  const accepted = await call('respond', { id: invitation.body.id, action: 'accept' }, b.cookie);
+  const id = accepted.body.matchId;
+  assert.ok(id);
+  assert.equal((await call(`poll?invite=${invitation.body.id}`, undefined, a.cookie)).body.invitation.matchId, id);
+  await call('ready', { id, roster }, a.cookie);
+  const ready = call('ready', { id, roster }, b.cookie);
+  await loading;
+  await call(`poll?match=${id}`, undefined, a.cookie);
+  release();
+  assert.equal((await ready).body.status, 'battle');
+  assert.equal(loads, 1);
+  assert.equal((await call(`poll?match=${id}`, undefined, a.cookie)).body.match.status, 'battle');
+});
+
+test('account outages are retryable and repeated account restoration keeps the session cookie', async t => {
+  const oldUrl = process.env.SUPABASE_URL, oldKey = process.env.SUPABASE_PUBLISHABLE_KEY;
+  process.env.SUPABASE_URL = 'https://example.supabase.co';
+  process.env.SUPABASE_PUBLISHABLE_KEY = 'public-test-key';
+  t.after(() => {
+    if (oldUrl === undefined) delete process.env.SUPABASE_URL; else process.env.SUPABASE_URL = oldUrl;
+    if (oldKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY; else process.env.SUPABASE_PUBLISHABLE_KEY = oldKey;
+  });
+  const { call } = setup();
+  const fetch = t.mock.method(globalThis, 'fetch', async () => new Response('{}', { status: 503 }));
+  assert.equal((await call('auth', { token: 'test' })).status, 503);
+  fetch.mock.mockImplementation(async () => new Response('{}', { status: 429 }));
+  assert.equal((await call('auth', { token: 'test' })).status, 429);
+  fetch.mock.mockImplementation(async () => Response.json({ id: 'auth-trainer', email_confirmed_at: '2026-09-13' }));
+  const signedIn = await call('auth', { token: 'test' });
+  assert.equal(signedIn.status, 200);
+  const restored = await call('auth', { token: 'test' }, signedIn.cookie);
+  assert.equal(restored.status, 200);
+  assert.equal(restored.cookie, undefined);
+  assert.equal((await call('session', undefined, signedIn.cookie)).status, 200);
 });
