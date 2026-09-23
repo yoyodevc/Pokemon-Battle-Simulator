@@ -293,6 +293,7 @@ button:disabled,.primary-button:disabled{opacity:.5}
 .battle-move:hover:not(:disabled){background:#39443d;transform:translateY(-3px);border-color:var(--type-color)}
 .battle-move:focus-visible{outline-color:var(--gold);outline-offset:3px}
 .battle-move:disabled{opacity:.5}
+.command-fight.is-locked .battle-move,.command-fight.is-locked .cmd-button{filter:grayscale(1);opacity:.4;cursor:not-allowed}
 .move-head{display:flex;align-items:start;justify-content:space-between;gap:8px}
 .move-head strong{font-family:var(--display);text-transform:uppercase;font-size:clamp(17px,1.8vw,26px);line-height:1;overflow-wrap:anywhere}
 .move-slot{font:9px monospace;color:#96a295;margin-top:3px}

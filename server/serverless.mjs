@@ -207,7 +207,7 @@ export async function handle(request, store, { loader = loadBattle, verify } = {
           if (hydrate) hydrate.players = data.matches[input.id].players;
           body = league.viewMatch(uid, input.id);
           break;
-        case 'action': league.act(uid, input.id, input.action, input.version); break;
+        case 'action': league.act(uid, input.id, input.action, input.version); body = league.viewMatch(uid, input.id); break;
         case 'rematch': body = { matchId: league.rematch(uid, input.id) }; break;
         default: fail('Not found.', 404);
       }

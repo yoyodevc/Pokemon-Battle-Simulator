@@ -4,16 +4,16 @@ import { CPU_DIFFICULTIES, type CpuDifficulty } from '../state/cpuStrategy';
 
 export interface BattleConfig { playerRoster: string[]; enemyRoster: string[]; mode: BattleMode; difficulty: CpuDifficulty }
 
-function TeamSlots({ roster, label, active, onEdit, onRemove, pokemonByName }: { roster: string[]; label: string; active: boolean; onEdit: () => void; onRemove: (name: string) => void; pokemonByName: Record<string, PickerPokemon> }) {
+export function TeamSlots({ roster, label, active, onEdit, onRemove, pokemonByName, disabled = false }: { roster: string[]; label: string; active: boolean; onEdit: () => void; onRemove: (name: string) => void; pokemonByName: Record<string, PickerPokemon>; disabled?: boolean }) {
   return <section className={`roster-panel ${active ? 'is-editing' : ''}`} aria-label={label}>
-    <button className="roster-heading" onClick={onEdit} aria-pressed={active}><span><small>{active ? 'EDITING LINEUP' : 'CLICK TO EDIT'}</small><strong>{label}</strong></span><b>{roster.length}<i>/6</i></b></button>
+    <button type="button" className="roster-heading" disabled={disabled} onClick={onEdit} aria-pressed={active}><span><small>{disabled ? 'YOUR LINEUP' : active ? 'EDITING LINEUP' : 'CLICK TO EDIT'}</small><strong>{label}</strong></span><b>{roster.length}<i>/6</i></b></button>
     <div className="team-slots" aria-label={`${label}, ${roster.length} of 6 selected`}>
       {Array.from({ length: 6 }, (_, slot) => {
         const name = roster[slot];
         return <div className={`team-slot ${name ? 'filled' : 'empty'}`} key={name ?? slot}>
           <span className="team-slot-number">{String(slot + 1).padStart(2, '0')}</span>
-          {name ? <>{pokemonByName[name]?.sprite && <img src={pokemonByName[name].sprite} alt="" />}<strong>{name.replaceAll('-', ' ')}</strong><button type="button" aria-label={`Remove ${name} from ${label}`} onClick={() => onRemove(name)}>×</button></>
-            : <button className="open-slot" onClick={onEdit} aria-label={`Edit ${label}, open slot ${slot + 1}`}><span>+</span> Open slot</button>}
+          {name ? <>{pokemonByName[name]?.sprite && <img src={pokemonByName[name].sprite} alt="" />}<strong>{name.replaceAll('-', ' ')}</strong><button type="button" disabled={disabled} aria-label={`Remove ${name} from ${label}`} onClick={() => onRemove(name)}>×</button></>
+            : <button type="button" className="open-slot" disabled={disabled} onClick={onEdit} aria-label={`Edit ${label}, open slot ${slot + 1}`}><span>+</span> Open slot</button>}
         </div>;
       })}
     </div>

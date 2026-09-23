@@ -49,10 +49,12 @@ export function useBattleMusic(enabled: boolean, volume: number) {
     start();
     document.addEventListener('pointerdown', start);
     document.addEventListener('keydown', start);
+    document.addEventListener('touchend', start);
     document.addEventListener('visibilitychange', visibility);
     return () => {
       document.removeEventListener('pointerdown', start);
       document.removeEventListener('keydown', start);
+      document.removeEventListener('touchend', start);
       document.removeEventListener('visibilitychange', visibility);
       track.close(); music.current = null;
     };

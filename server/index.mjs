@@ -117,7 +117,7 @@ const server = createServer(async (req, res) => {
         }
         result = league.viewMatch(id, input.id); break;
       }
-      case 'action': league.act(id, input.id, input.action, input.version); break;
+      case 'action': league.act(id, input.id, input.action, input.version); result = league.viewMatch(id, input.id); break;
       case 'rematch': result = { matchId: league.rematch(id, input.id) }; break;
       default: return json(res, 404, { error: 'Not found' });
     }

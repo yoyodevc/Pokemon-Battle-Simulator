@@ -319,7 +319,7 @@ function MoveEffect({ move, side }: { move: Move; side: Side }) {
   </div>;
 }
 
-export default function BattleScene({ online }: { online?: { waiting: boolean; disabled: boolean; opponent: string; seconds: number; rematchPending: boolean; connected: boolean; replayEvent?: BattleEvent; replayIndex?: number } } = {}) {
+export default function BattleScene({ online }: { online?: { waiting: boolean; disabled: boolean; sending?: boolean; endReason?: string; opponent: string; seconds: number; rematchPending: boolean; connected: boolean; replayEvent?: BattleEvent; replayIndex?: number; onExit?: () => void } } = {}) {
   const { session, dispatch, initial, sprites } = useBattle();
   const { battle, events, mode, pendingPlayerAction } = session;
   const player = activePokemon(battle, 0);
@@ -348,11 +348,13 @@ export default function BattleScene({ online }: { online?: { waiting: boolean; d
   const reducedMotion = useReducedMotion();
   const elapsed = useElapsedClock(!ended, match);
   const presentation = useEventPresentation(events, reducedMotion);
-  const activeEvent = online?.replayEvent ?? (presentation.activeIndex >= 0 ? events[presentation.activeIndex] : undefined);
+  const interrupted = ended && !!online?.endReason && online.endReason !== 'battle';
+  const presenting = presentation.busy && !interrupted;
+  const activeEvent = online?.replayEvent ?? (!interrupted && presentation.activeIndex >= 0 ? events[presentation.activeIndex] : undefined);
   // Keep the last presented frame while React starts a newly appended batch.
   const frame = useRef(battle);
   const displayBattle = activeEvent?.teams ? { ...battle, teams: activeEvent.teams, turn: activeEvent.turn }
-    : presentation.visibleCount < events.length ? frame.current : battle;
+    : !interrupted && presentation.visibleCount < events.length ? frame.current : battle;
   useEffect(() => { frame.current = displayBattle; }, [displayBattle]);
   const displayPlayer = activePokemon(displayBattle, 0);
   const displayOpponent = activePokemon(displayBattle, 1);
@@ -371,8 +373,8 @@ export default function BattleScene({ online }: { online?: { waiting: boolean; d
   const opponentFainted = displayOpponent.hp === 0 && !(activeEvent?.kind === 'damage' && activeEvent.side === 1);
 
   useEffect(() => {
-    if (presentation.busy) dialogueRef.current?.focus({ preventScroll: true });
-  }, [presentation.activeIndex, presentation.busy]);
+    if (presenting) dialogueRef.current?.focus({ preventScroll: true });
+  }, [presentation.activeIndex, presenting]);
 
   useEffect(() => { if (!localWaiting) setShowOpponent(false); }, [localWaiting]);
   useEffect(() => { setPreview(null); }, [battle.turn, battle.phase]);
@@ -405,11 +407,11 @@ export default function BattleScene({ online }: { online?: { waiting: boolean; d
   const controlledTeam = battle.teams[controllingSide];
   const canSwitch = controlledTeam.pokemon.some((member, slot) => slot !== controlledTeam.active && member.hp > 0);
   const waitingForHandover = localWaiting && !showOpponent;
-  const inputReady = !presentation.busy && !ended && !waitingForHandover && !online?.disabled && !online?.waiting;
+  const inputReady = !presenting && !ended && !waitingForHandover && !online?.disabled && !online?.waiting;
 
   const dialogue = (() => {
     if (online?.replayEvent) return { eyebrow: 'TURN RESOLUTION', text: online.replayEvent.message, tone: 'is-resolving' };
-    if (presentation.busy) return { eyebrow: 'TURN RESOLUTION', text: activeEvent?.message ?? 'Resolving the turn…', tone: 'is-resolving' };
+    if (presenting) return { eyebrow: 'TURN RESOLUTION', text: activeEvent?.message ?? 'Resolving the turn…', tone: 'is-resolving' };
     if (ended) return {
       eyebrow: 'BATTLE COMPLETE',
       text: battle.winner === 'draw' ? 'The battle ended in a draw.'
@@ -417,7 +419,8 @@ export default function BattleScene({ online }: { online?: { waiting: boolean; d
       tone: 'is-result',
     };
     if (online && !online.connected) return { eyebrow: 'RECONNECTING', text: 'Reconnecting. Your battle is preserved.', tone: '' };
-    if (online?.waiting) return { eyebrow: 'TURN LOCKED', text: 'Waiting for your rival.', tone: '' };
+    if (online?.sending) return { eyebrow: 'YOUR TURN', text: 'Sending your choice...', tone: '' };
+    if (online?.waiting) return { eyebrow: 'TURN STATUS', text: 'Choice submitted. Waiting for your rival.', tone: '' };
     if (waitingForHandover) return { eyebrow: 'PASS & PLAY', text: 'Player 1 has locked in. Pass the device to Player 2.', tone: '' };
     if (forced) return { eyebrow: 'POKÉMON FAINTED', text: 'Choose the next Pokémon to send out.', tone: '' };
     if (switching) return { eyebrow: 'PARTY', text: 'Choose a Pokémon to send out.', tone: '' };
@@ -435,7 +438,7 @@ export default function BattleScene({ online }: { online?: { waiting: boolean; d
 
   return <main id="main-content" className="battle-page">
     <h1 className="sr-only">Battle arena</h1>
-    <div className={`battle-arena ${presentation.busy ? 'is-busy' : ''}`}>
+    <div className={`battle-arena ${presenting ? 'is-busy' : ''}`}>
       <div className="arena-scenery" aria-hidden="true">
         <span className="arena-sky" /><span className="stadium-roof" /><span className="stadium-lights lights-left" /><span className="stadium-lights lights-right" /><span className="stadium-stands" />
         <span className="stadium-banner">POKÉMON BATTLE LEAGUE <b>✦</b> THE STAGE IS YOURS <b>✦</b> POKÉMON BATTLE LEAGUE</span>
@@ -468,42 +471,43 @@ export default function BattleScene({ online }: { online?: { waiting: boolean; d
           <label className="hud-toggle" title="Pokémon Diamond/Pearl/Platinum Trainer Battle Music; loops from 0:04">Music<input type="range" min="0" max="1" step=".05" value={musicVolume} aria-label="Battle music volume" onChange={event => {
             const value = Number(event.target.value); setMusicVolume(value); localStorage.setItem('battle-music-volume', String(value));
           }} /></label>
-          <a className="hud-toggle hud-exit" href={online ? '#league' : '#home'}>Exit</a>
+          {online?.onExit ? <button type="button" className="hud-toggle hud-exit" onClick={online.onExit}>Exit</button>
+            : <a className="hud-toggle hud-exit" href={online ? '#league' : '#home'}>Exit</a>}
         </div>
 
         <StatusCapsule battle={displayBattle} side={1} displayHp={opponentDisplayHp} />
         <StatusCapsule battle={displayBattle} side={0} displayHp={playerDisplayHp} />
 
-        {ended && !presentation.busy && <div className={`result-banner ${battle.winner === 0 || mode === 'local' ? 'is-victory' : ''}`} role="status"><span className="eyebrow">MATCH COMPLETE / {battle.turn} TURNS</span><strong>{battle.winner === 'draw' ? 'HONORS EVEN.' : mode === 'local' ? `${winnerName} WINS.` : battle.winner === 0 ? 'VICTORY.' : 'WELL FOUGHT.'}</strong><p>{battle.winner === 'draw' ? 'Two worthy rivals. One unforgettable match.' : battle.winner === 0 || mode === 'local' ? 'A great team. A greater performance.' : 'Every rival teaches you something. Come back stronger.'}</p></div>}
+        {ended && !presenting && <div className={`result-banner ${battle.winner === 0 || mode === 'local' ? 'is-victory' : ''}`} role="status"><span className="eyebrow">MATCH COMPLETE / {battle.turn} TURNS</span><strong>{battle.winner === 'draw' ? 'HONORS EVEN.' : mode === 'local' ? `${winnerName} WINS.` : battle.winner === 0 ? 'VICTORY.' : 'WELL FOUGHT.'}</strong><p>{online?.endReason === 'disconnect' ? 'The match ended because a trainer did not reconnect.' : online?.endReason === 'timeout' ? 'The turn timer expired.' : online?.endReason === 'forfeit' ? 'A trainer conceded the match.' : battle.winner === 'draw' ? 'Two worthy rivals. One unforgettable match.' : battle.winner === 0 || mode === 'local' ? 'A great team. A greater performance.' : 'Every rival teaches you something. Come back stronger.'}</p></div>}
 
         {logOpen && <BattleLog events={events.slice(0, presentation.visibleCount)} activeIndex={presentation.activeIndex} onClose={() => setLogOpen(false)} />}
 
         <section
           ref={dialogueRef}
-          className={`battle-dialogue ${dialogue.tone} ${presentation.busy && presentation.visualReady ? 'is-advanceable' : ''}`}
+          className={`battle-dialogue ${dialogue.tone} ${presenting && presentation.visualReady ? 'is-advanceable' : ''}`}
           aria-live="polite"
-          aria-label={presentation.busy
+          aria-label={presenting
             ? presentation.visualReady
               ? 'Battle message. Press Enter, Space, or click to continue.'
               : 'Battle message. Please wait for the animation to finish.'
             : undefined}
-          tabIndex={presentation.busy ? 0 : undefined}
-          onClick={() => { if (presentation.busy) presentation.advance(); }}
+          tabIndex={presenting ? 0 : undefined}
+          onClick={() => { if (presenting) presentation.advance(); }}
           onKeyDown={(event) => {
-            if (presentation.busy && (event.key === 'Enter' || event.key === ' ')) {
+            if (presenting && (event.key === 'Enter' || event.key === ' ')) {
               event.preventDefault();
               presentation.advance();
             }
           }}>
           <p className="eyebrow">{dialogue.eyebrow}</p>
           <p className="dialogue-text">{dialogue.text}</p>
-          {presentation.busy && <p className="dialogue-advance" aria-hidden="true">
+          {presenting && <p className="dialogue-advance" aria-hidden="true">
             {presentation.visualReady ? 'CLICK / ENTER / SPACE TO CONTINUE' : 'PLAYING OUT…'}
           </p>}
         </section>
 
         <div className="battle-command">
-          {ended && !presentation.busy ? <div className="command-endcard">
+          {ended && !presenting ? <div className="command-endcard">
             <button className="cmd-button cmd-fight" disabled={online?.disabled || online?.rematchPending} onClick={() => { dispatch({ type: 'restart', battle: initial, mode, difficulty: session.difficulty }); setMatch((value) => value + 1); setSwitching(false); setConfirmForfeit(false); }}>
               <span aria-hidden="true">↻</span> {online?.rematchPending ? 'Rematch requested' : 'Rematch'}
             </button>
@@ -518,7 +522,7 @@ export default function BattleScene({ online }: { online?: { waiting: boolean; d
               forced={forced}
               onBack={() => setSwitching(false)}
               onSwitch={(slot) => act({ kind: 'switch', slot })} />
-          : <div className="command-fight">
+          : <div className={`command-fight${online?.waiting ? ' is-locked' : ''}`}>
             <MovePanel
               moves={actor.moves}
               hints={hints}
