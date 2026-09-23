@@ -20,16 +20,33 @@ export function createApp() {
 }
 
 export function createStore(app = createApp()) {
-  return { db: getFirestore(app), auth: getAuth(app) };
+  const db = getFirestore(app);
+  // Hydrated battle data (e.g. a move with no ailment effect) legitimately contains
+  // `undefined` fields, which Firestore otherwise rejects outright (unlike `null`).
+  db.settings({ ignoreUndefinedProperties: true });
+  return { db, auth: getAuth(app) };
 }
 
 const empty = () => Object.fromEntries(COLLECTIONS.map(c => [c, {}]));
 const key = (collection, id) => `${collection}/${id}`;
-// Firestore document values must be maps. server/teams.mjs stores a bare array per user
-// (league.mjs's other collections always store objects) — wrap/unwrap it transparently
-// here so that quirk stays local to the storage layer.
-const toDoc = v => Array.isArray(v) ? { list: v } : v;
-const fromDoc = v => (v && typeof v === 'object' && Array.isArray(v.list) && Object.keys(v).length === 1) ? v.list : v;
+// Firestore forbids two shapes league.mjs's plain-JS data structures use freely:
+// (1) a document root that isn't a map — server/teams.mjs stores a bare array per user;
+// (2) an array whose elements are themselves arrays — e.g. a match's `rosters` and
+// `revealed` fields are each a 2-element array of arrays. Both are wrapped transparently
+// on the way in and unwrapped on the way out, so this quirk stays local to the storage
+// layer and league.mjs never has to know about it.
+const wrapArrays = v => {
+  if (Array.isArray(v)) return v.map(item => Array.isArray(item) ? { __arr: wrapArrays(item) } : wrapArrays(item));
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, wrapArrays(x)]));
+  return v;
+};
+const unwrapArrays = v => {
+  if (Array.isArray(v)) return v.map(item => (item && typeof item === 'object' && Array.isArray(item.__arr) && Object.keys(item).length === 1) ? unwrapArrays(item.__arr) : unwrapArrays(item));
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, unwrapArrays(x)]));
+  return v;
+};
+const toDoc = v => { const wrapped = wrapArrays(v); return Array.isArray(wrapped) ? { list: wrapped } : wrapped; };
+const fromDoc = v => unwrapArrays((v && typeof v === 'object' && Array.isArray(v.list) && Object.keys(v).length === 1) ? v.list : v);
 
 /**
  * Runs `operation(data)` inside a Firestore transaction, where `data` is a sparse object
@@ -43,6 +60,9 @@ const fromDoc = v => (v && typeof v === 'object' && Array.isArray(v.list) && Obj
  * transaction aborts and this rejects so the caller can retry.
  */
 export async function withDocs(db, plan, operation) {
+  // Above the SDK's own default (5): each document here is touched by at most two
+  // players plus this endpoint's own polling, so a higher ceiling costs nothing in the
+  // normal case and gives real headroom against transient contention under a burst.
   return db.runTransaction(async tx => {
     const data = empty();
     const refs = new Map();
@@ -65,7 +85,7 @@ export async function withDocs(db, plan, operation) {
       }
     });
     return result;
-  });
+  }, { maxAttempts: 10 });
 }
 
 /** Runs one or more queries (each an array of Firestore QuerySnapshot docs) and merges results into a plain {id: value} map, deduped by doc id. */
