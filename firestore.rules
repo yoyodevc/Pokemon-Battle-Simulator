@@ -1,0 +1,14 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Deny-all: only the server (firebase-admin, using a service-account key that bypasses
+    // these rules entirely) reads or writes League data. The frontend never talks to
+    // Firestore directly — every match/lobby view is computed server-side in
+    // server/league.mjs's viewMatch()/snapshot(), which redacts hidden Pokemon, moves, and
+    // the RNG seed per viewer. There is no way to express that redaction in security rules,
+    // so a client-readable rule here would leak hidden battle information.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

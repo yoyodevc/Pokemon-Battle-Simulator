@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { auth, authMessage, avatar, confirmationRedirect, LeagueError, request, restoreLeagueSession, type Config, type Invitation, type Lobby, type Match, type Trainer } from './client';
+import { EmailAuthProvider, confirmPasswordReset, createUserWithEmailAndPassword, linkWithCredential, sendPasswordResetEmail, signInAnonymously, signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { firebaseAuth, authMessage, avatar, LeagueError, request, restoreLeagueSession, type Config, type Invitation, type Lobby, type Match, type Trainer } from './client';
 import OnlineBattle from './OnlineBattle';
 import ReplayViewer from './ReplayViewer';
 import ChallengeInbox from './ChallengeInbox';
@@ -12,6 +13,14 @@ type Tab = 'lobby' | 'friends' | 'history' | 'profile';
 const message = (e: unknown) => e instanceof Error ? e.message : 'Something went wrong. Try again.';
 function Portrait({ trainer }: { trainer: Trainer }) {
   return <span className="lg-portrait"><img src={avatar(trainer.avatar)} alt="" /><i className={`lg-presence ${trainer.presence.replace(' ', '-')}`} title={trainer.presence} /></span>;
+}
+/** A password-reset link's mode/oobCode may land in the query string or, if Firebase
+ * appended them after an existing #hash continue URL, inside the hash itself. */
+function actionParams(): URLSearchParams {
+  const fromSearch = new URLSearchParams(location.search);
+  if (fromSearch.get('oobCode')) return fromSearch;
+  const hash = location.hash.includes('?') ? location.hash.slice(location.hash.indexOf('?') + 1) : '';
+  return new URLSearchParams(hash);
 }
 
 export default function LeaguePage({ route }: { route: string }) {
@@ -30,6 +39,7 @@ export default function LeaguePage({ route }: { route: string }) {
   const [connected, setConnected] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'register' | 'reset' | 'password'>('login');
+  const [resetCode, setResetCode] = useState<string | null>(null);
   const [email, setEmail] = useState('');
   const [search, setSearch] = useState('');
   const [results, setResults] = useState<Trainer[]>([]);
@@ -53,22 +63,15 @@ export default function LeaguePage({ route }: { route: string }) {
     void (async () => {
       try {
         const c = await request<Config>('config'); if (!live) return; setConfig(c);
+        const params = actionParams();
+        if (params.get('mode') === 'resetPassword' && params.get('oobCode')) { setResetCode(params.get('oobCode')); setAuthMode('password'); setAccountOpen(true); }
         const snapshot = await restoreLeagueSession(c);
-        if (live && snapshot && new URLSearchParams(location.search).has('recovery')) { setAuthMode('password'); setAccountOpen(true); }
         if (live) { setError(''); setLobby(snapshot); }
       } catch (e) { if (live) setError(message(e)); }
       finally { if (live) setLoading(false); }
     })();
     return () => { live = false; };
   }, [connectionAttempt]);
-
-  useEffect(() => {
-    if (!config?.accounts) return;
-    const { data: { subscription } } = auth(config).auth.onAuthStateChange((event) => {
-      if (event === 'PASSWORD_RECOVERY') { setAuthMode('password'); setAccountOpen(true); }
-    });
-    return () => subscription.unsubscribe();
-  }, [config]);
 
   useEffect(() => {
     if (!lobby) return;
@@ -111,32 +114,31 @@ export default function LeaguePage({ route }: { route: string }) {
     event.preventDefault();
     const password = String(new FormData(event.currentTarget).get('password') || '');
     await run(async () => {
-      const client = auth(config!);
+      const client = firebaseAuth(config!);
       const fail = (e: unknown) => { throw new Error(authMessage(e)); };
       if (authMode === 'reset') {
-        const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo: `${location.origin}/?recovery=1#league` });
-        if (error) fail(error); setNotice('Check your email for a password reset link.'); return;
+        try { await sendPasswordResetEmail(client, email, { url: `${location.origin}/?recovery=1#league` }); } catch (e) { fail(e); }
+        setNotice('Check your email for a password reset link.'); return;
       }
       if (authMode === 'password') {
-        const { error } = await client.auth.updateUser({ password });
-        if (error) fail(error); setNotice('Password updated.'); setAccountOpen(false); return;
+        if (!resetCode) fail(new Error('This reset link is invalid or expired. Request a new one.'));
+        try { await confirmPasswordReset(client, resetCode!, password); } catch (e) { fail(e); }
+        setNotice('Password updated. Sign in below.'); setAuthMode('login'); setResetCode(null); return;
       }
-      const result = authMode === 'register' ? await client.auth.signUp({ email, password, options: { emailRedirectTo: confirmationRedirect() } }) : await client.auth.signInWithPassword({ email, password });
-      if (result.error) fail(result.error);
-      // A sign-up for an address that already exists comes back with no
-      // identities rather than an error, so say so instead of promising an email.
-      if (authMode === 'register' && result.data.user?.identities?.length === 0) {
-        setAuthMode('login'); setNotice('That email already has an account. Sign in below.'); return;
+      if (authMode === 'register') {
+        const credential = EmailAuthProvider.credential(email, password);
+        try {
+          if (client.currentUser?.isAnonymous) await linkWithCredential(client.currentUser, credential);
+          else await createUserWithEmailAndPassword(client, email, password);
+        } catch (e) {
+          const code = (e as { code?: string }).code;
+          if (code === 'auth/credential-already-in-use' || code === 'auth/email-already-in-use') { try { await signInWithEmailAndPassword(client, email, password); } catch (e2) { fail(e2); } }
+          else fail(e);
+        }
+      } else {
+        try { await signInWithEmailAndPassword(client, email, password); } catch (e) { fail(e); }
       }
-      if (!result.data.session) { setNotice('Check your email to confirm your account, then sign in. The link opens this page.'); return; }
-      setLobby(await request<Lobby>('auth', { token: result.data.session.access_token })); setAccountOpen(false); setNotice('Welcome to the League.');
-    });
-  }
-  async function resendConfirmation() {
-    await run(async () => {
-      const { error } = await auth(config!).auth.resend({ type: 'signup', email, options: { emailRedirectTo: confirmationRedirect() } });
-      if (error) throw new Error(authMessage(error));
-      setNotice('Confirmation email sent again. Check your inbox and spam folder.');
+      setLobby(await request<Lobby>('session')); setAccountOpen(false); setNotice('Welcome to the League.');
     });
   }
   async function respond(id: string, action: string) {
@@ -157,11 +159,11 @@ export default function LeaguePage({ route }: { route: string }) {
     <h2>{authMode === 'register' ? 'Join the League' : authMode === 'reset' ? 'Reset password' : authMode === 'password' ? 'Choose a new password' : 'Welcome back'}</h2>
     {accountOpen && error && <p className="lg-alert" role="alert">{error}</p>}
     {accountOpen && notice && <p className="lg-notice" role="status">{notice}</p>}
-    {!config?.accounts && <p className="lg-muted">Account sign-in is not available on this server yet. Guest battles are ready to play.</p>}
+    {!config?.accounts && <p className="lg-muted">The League server is not configured yet.</p>}
     {authMode !== 'password' && <label>Email<input name="email" type="email" autoComplete="email" required disabled={!config?.accounts} value={email} onChange={e => setEmail(e.target.value)} /></label>}
     {authMode !== 'reset' && <label>Password<input name="password" type="password" minLength={8} autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} required disabled={!config?.accounts} /></label>}
     <button className="lg-primary" disabled={busy || !config?.accounts}>{busy ? 'Please wait...' : authMode === 'register' ? 'Create account' : authMode === 'reset' ? 'Send reset link' : authMode === 'password' ? 'Update password' : 'Sign in'}</button>
-    <div className="lg-inline">{authMode !== 'password' && <><button type="button" className="lg-link" onClick={() => setAuthMode(authMode === 'register' ? 'login' : 'register')}>{authMode === 'register' ? 'Already a member? Sign in' : 'Create an account'}</button><button type="button" className="lg-link" onClick={() => setAuthMode('reset')}>Forgot password?</button></>}{authMode !== 'password' && config?.accounts && <button type="button" className="lg-link" disabled={busy || !email} onClick={() => void resendConfirmation()}>Resend confirmation email</button>}</div>
+    {authMode !== 'password' && <div className="lg-inline"><button type="button" className="lg-link" onClick={() => setAuthMode(authMode === 'register' ? 'login' : 'register')}>{authMode === 'register' ? 'Already a member? Sign in' : 'Create an account'}</button><button type="button" className="lg-link" onClick={() => setAuthMode('reset')}>Forgot password?</button></div>}
   </form>;
 
   if (lobby && replay) return <ReplayViewer key={replay.id} match={replay} user={lobby.user} onClose={() => setReplay(null)} />;
@@ -176,10 +178,10 @@ export default function LeaguePage({ route }: { route: string }) {
     {notice && <div className="lg-notice" role="status"><span>{notice}</span><button aria-label="Dismiss notification" onClick={() => setNotice('')}>&times;</button></div>}
     {!matchId && <ChallengeInbox invitations={incoming} busy={busy || !!lobby?.activeMatch} onRespond={respond} />}
     {loading ? <div className="lg-empty" role="status">Connecting to the League...</div> : !lobby ? <div className="lg-entry">
-      <section className="lg-guest"><span className="lg-kicker">YOUR NEXT RIVAL IS WAITING</span><div className="lg-starters"><img src={avatar(6)} alt="Charizard" /><img src={avatar(25)} alt="Pikachu" /><img src={avatar(9)} alt="Blastoise" /></div><h2>A new challenger<br />enters the League.</h2><button className="lg-primary" disabled={busy || !config} onClick={() => void run(async () => setLobby(await request<Lobby>('guest', {})))}>Play as Guest <span>&#8594;</span></button><p className="lg-muted">Guest identity lasts 7 days in this browser. Create an account to keep your trainer and add friends.</p></section>
+      <section className="lg-guest"><span className="lg-kicker">YOUR NEXT RIVAL IS WAITING</span><div className="lg-starters"><img src={avatar(6)} alt="Charizard" /><img src={avatar(25)} alt="Pikachu" /><img src={avatar(9)} alt="Blastoise" /></div><h2>A new challenger<br />enters the League.</h2><button className="lg-primary" disabled={busy || !config?.accounts} onClick={() => void run(async () => { await signInAnonymously(firebaseAuth(config!)); setLobby(await request<Lobby>('session')); })}>Play as Guest <span>&#8594;</span></button><p className="lg-muted">Guest identity lasts as long as this browser keeps it signed in. Create an account to keep your trainer and add friends.</p></section>
       {accountForm}
     </div> : <>
-      <div className="lg-playerbar"><div className="lg-inline"><Portrait trainer={lobby.user} /><div><strong>{lobby.user.username}</strong><small>{lobby.user.guest ? 'Guest trainer' : 'League trainer'} <span className={connected ? 'lg-live' : 'lg-muted'}>{connected ? ' / Connected' : ' / Reconnecting...'}</span></small></div></div><div className="lg-inline"><span className="lg-stat"><b>{lobby.stats.wins}</b> WINS</span><span className="lg-stat"><b>{lobby.stats.played}</b> MATCHES</span>{lobby.user.guest && <button className="lg-secondary" onClick={() => { setAuthMode('register'); setAccountOpen(true); }}>Keep my trainer</button>}<button className="lg-link" disabled={busy} onClick={() => void run(async () => { await request('logout', {}); if (config?.accounts) await auth(config).auth.signOut(); setLobby(null); window.location.hash = 'league'; })}>Sign out</button></div></div>
+      <div className="lg-playerbar"><div className="lg-inline"><Portrait trainer={lobby.user} /><div><strong>{lobby.user.username}</strong><small>{lobby.user.guest ? 'Guest trainer' : 'League trainer'} <span className={connected ? 'lg-live' : 'lg-muted'}>{connected ? ' / Connected' : ' / Reconnecting...'}</span></small></div></div><div className="lg-inline"><span className="lg-stat"><b>{lobby.stats.wins}</b> WINS</span><span className="lg-stat"><b>{lobby.stats.played}</b> MATCHES</span>{lobby.user.guest && <button className="lg-secondary" onClick={() => { setAuthMode('register'); setAccountOpen(true); }}>Keep my trainer</button>}<button className="lg-link" disabled={busy} onClick={() => void run(async () => { if (config?.accounts) await signOut(firebaseAuth(config)); setLobby(null); window.location.hash = 'league'; })}>Sign out</button></div></div>
       {accountOpen && <Modal label="Account" close={() => setAccountOpen(false)}><button className="lg-close" aria-label="Close account" onClick={() => setAccountOpen(false)}>&times;</button>{accountForm}</Modal>}
       {matchId ? match ? <OnlineBattle match={match} user={lobby.user} busy={busy} connected={connected} run={run} onNotice={setNotice} /> : <div className="lg-empty">{error ? <a href="#league">Return to lobby</a> : 'Opening match...'}</div> : <>
         {lobby.activeMatch && <div className="lg-resume"><span>Your match is still open.</span><button className="lg-primary" onClick={() => goMatch(lobby.activeMatch!)}>Return to match &#8594;</button></div>}

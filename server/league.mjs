@@ -1,7 +1,7 @@
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { createBattle, legalActions, resolveTurn } from '../src/engine/turn.ts';
 
-export const blankData = () => ({ users: {}, sessions: {}, friends: {}, blocks: {}, challenges: {}, matches: {}, teams: {} });
+export const blankData = () => ({ users: {}, friends: {}, blocks: {}, challenges: {}, matches: {}, teams: {} });
 const pair = (a, b) => [a, b].sort().join(':');
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
 const same = (a, b) => a.kind === b.kind && (a.kind === 'forfeit' || a.slot === b.slot);
@@ -15,24 +15,22 @@ export class League {
   user(id) { return this.data.users[id] ?? fail('Session expired. Sign in again.', 401); }
   profile(id) {
     const u = this.user(id), p = this.presence.get(id);
-    return { id, username: u.username, avatar: u.avatar, guest: !u.authId, privacy: u.privacy,
+    return { id, username: u.username, avatar: u.avatar, guest: u.guest, privacy: u.privacy,
       presence: !p || this.now() - p.seen > 25000 ? 'offline' : this.active(id) ? 'in battle' : p.away ? 'away' : 'online' };
   }
-  createUser(authId = null, username) {
-    const id = randomUUID();
+  /** id is the caller-supplied Firebase UID (guest or real) — the one identity, never regenerated. */
+  createUser(id, guest, username) {
     if (username && Object.values(this.data.users).some(u => u.username.toLowerCase() === username.toLowerCase())) fail('That trainer name is taken.', 409);
     if (!username) do { username = `Guest_${randomBytes(4).toString('hex')}`; } while (Object.values(this.data.users).some(u => u.username === username));
-    const u = { id, authId, username: username || `Guest_${randomBytes(3).toString('hex')}`, avatar: 25,
-      privacy: 'everyone', created: this.now() };
+    const u = { id, guest, username, usernameLower: username.toLowerCase(), avatar: 25, privacy: 'everyone',
+      created: this.now(), activeMatchId: null, stats: { played: 0, wins: 0, draws: 0 } };
     this.data.users[id] = u; this.commit(); return u;
   }
-  account(authId, guestId) {
-    let u = Object.values(this.data.users).find(x => x.authId === authId);
-    if (!u && guestId && !this.user(guestId).authId) {
-      u = this.user(guestId); u.authId = authId;
-    }
-    if (!u) u = this.createUser(authId, `Trainer_${randomBytes(4).toString('hex')}`);
-    this.commit(); return u;
+  /** Flips a guest's doc to a real account in place once their Firebase token stops being anonymous. Same uid throughout. */
+  claim(id) {
+    const u = this.user(id);
+    if (u.guest) { u.guest = false; this.commit(); }
+    return u;
   }
   edit(id, input) {
     const u = this.user(id);
@@ -42,13 +40,14 @@ export class League {
     }
     if (input.avatar !== undefined && !AVATARS.includes(input.avatar)) fail('Choose a preset avatar.');
     if (input.privacy !== undefined && !['everyone', 'friends', 'nobody'].includes(input.privacy)) fail('Invalid privacy setting.');
-    if (input.username !== undefined) u.username = input.username;
+    if (input.username !== undefined) { u.username = input.username; u.usernameLower = input.username.toLowerCase(); }
     if (input.avatar !== undefined) u.avatar = input.avatar;
     if (input.privacy !== undefined) u.privacy = input.privacy;
     this.commit();
   }
   blocked(a, b) { return !!(this.data.blocks[`${a}:${b}`] || this.data.blocks[`${b}:${a}`]); }
-  active(id) { return Object.values(this.data.matches).find(m => m.players.includes(id) && !['ended', 'abandoned'].includes(m.status)); }
+  /** users/{id}.activeMatchId is kept in sync at match start (respond) and every ended/abandoned transition. */
+  active(id) { return this.data.users[id]?.activeMatchId ?? null; }
   touch(id, away = false) { this.presence.set(id, { seen: this.now(), away }); }
   canChallenge(a, b) {
     if (a === b) fail('Invite another trainer.');
@@ -65,7 +64,7 @@ export class League {
       for (const c of Object.values(this.data.challenges)) if (c.status === 'pending' && pair(c.from, c.to) === key) c.status = 'cancelled';
     } else if (input.action === 'unblock') delete this.data.blocks[`${id}:${target.id}`];
     else {
-      if (!this.user(id).authId || !target.authId) fail('Both trainers need accounts to become friends.');
+      if (this.user(id).guest || target.guest) fail('Both trainers need accounts to become friends.');
       if (this.blocked(id, target.id)) fail('This trainer is unavailable.', 403);
       if (input.action === 'request') {
         if (current) fail('A friendship or request already exists.', 409);
@@ -107,6 +106,7 @@ export class League {
       const match = { id: randomUUID(), players: [c.from, id], status: 'preparing', rosters: [null, null], ready: [false, false],
         actions: [null, null], version: 0, state: null, events: [], created: this.now(), deadline: this.now() + 600000, rematch: [] };
       this.data.matches[match.id] = match;
+      match.players.forEach(p => { const u = this.data.users[p]; if (u) u.activeMatchId = match.id; });
       c.to = id; c.status = 'accepted'; c.matchId = match.id;
       for (const other of Object.values(this.data.challenges)) if (other.status === 'pending' && [other.from, other.to].some(p => match.players.includes(p))) other.status = 'cancelled';
     } else fail('Unknown invitation action.');
@@ -161,13 +161,23 @@ export class League {
     m.status = 'ended'; m.winner = winner; m.reason = reason; m.ended = this.now(); m.version += 1;
     if (m.state) { m.state.phase = 'ended'; m.state.winner = winner; }
     m.actions = [null, null];
+    m.players.forEach((p, side) => {
+      const u = this.data.users[p]; if (!u) return;
+      u.activeMatchId = null;
+      u.stats ??= { played: 0, wins: 0, draws: 0 };
+      u.stats.played++; if (winner === 'draw') u.stats.draws++; else if (winner === side) u.stats.wins++;
+    });
+  }
+  abandon(m) {
+    m.status = 'abandoned'; m.ended = this.now(); m.version += 1;
+    m.players.forEach(p => { const u = this.data.users[p]; if (u) u.activeMatchId = null; });
   }
   act(id, matchId, action, version) {
     const m = this.match(id, matchId), side = m.players.indexOf(id);
     if (['ended', 'abandoned'].includes(m.status)) fail('This match has ended.', 409);
     if (action?.kind === 'forfeit') {
       if (m.status === 'battle') this.finish(m, 1 - side, 'forfeit');
-      else { m.status = 'abandoned'; m.ended = this.now(); m.version += 1; }
+      else this.abandon(m);
       this.commit(); return;
     }
     if (m.status !== 'battle' || version !== m.version || m.actions[side]) fail('The turn changed or your choice is already locked.', 409);
@@ -199,7 +209,7 @@ export class League {
     let changed = false;
     for (const c of Object.values(this.data.challenges)) if (c.status === 'pending' && c.expires <= this.now()) { c.status = 'expired'; changed = true; }
     for (const m of Object.values(this.data.matches)) {
-      if (m.status === 'preparing' && m.deadline < this.now()) { m.status = 'abandoned'; m.ended = this.now(); changed = true; }
+      if (m.status === 'preparing' && m.deadline < this.now()) { this.abandon(m); changed = true; }
       if (m.status !== 'battle') continue;
       const disconnected = m.players.map(p => this.now() - (this.presence.get(p)?.seen ?? m.created) > 60000);
       if (disconnected.some(Boolean)) { this.finish(m, disconnected.every(Boolean) ? 'draw' : disconnected[0] ? 1 : 0, 'disconnect'); changed = true; }
@@ -237,13 +247,14 @@ export class League {
     const challenges = Object.values(this.data.challenges).filter(c => (c.from === id || c.to === id) && c.status === 'pending').map(c => this.invitation(id, c.id));
     const history = Object.values(this.data.matches).filter(m => m.players.includes(id) && m.status === 'ended').sort((a, b) => b.ended - a.ended);
     return { user, friends, challenges, blocked: Object.keys(this.data.blocks).filter(k => k.startsWith(`${id}:`)).map(k => this.profile(k.slice(id.length + 1))),
-      activeMatch: this.active(id)?.id ?? null,
-      stats: { played: history.length, wins: history.filter(m => m.winner === m.players.indexOf(id)).length, draws: history.filter(m => m.winner === 'draw').length },
+      activeMatch: this.active(id),
+      stats: this.user(id).stats,
       history: history.slice(0, 20).map(m => ({ id: m.id, opponent: this.profile(m.players.find(p => p !== id)), result: m.winner === 'draw' ? 'draw' : m.winner === m.players.indexOf(id) ? 'win' : 'loss', reason: m.reason, ended: m.ended })) };
   }
   search(id, query) {
-    if (!this.user(id).authId) fail('Create an account to find friends.');
+    if (this.user(id).guest) fail('Create an account to find friends.');
     if (typeof query !== 'string' || query.trim().length < 3) return [];
-    return Object.values(this.data.users).filter(u => u.authId && u.id !== id && !this.blocked(id, u.id) && u.username.toLowerCase().includes(query.toLowerCase().trim())).slice(0, 15).map(u => this.profile(u.id));
+    const prefix = query.toLowerCase().trim();
+    return Object.values(this.data.users).filter(u => !u.guest && u.id !== id && !this.blocked(id, u.id) && u.usernameLower.startsWith(prefix)).slice(0, 15).map(u => this.profile(u.id));
   }
 }

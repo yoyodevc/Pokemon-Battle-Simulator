@@ -1,12 +1,13 @@
 import './register.mjs';
 import { createServer } from 'node:http';
-import { createHash, randomBytes, randomInt } from 'node:crypto';
+import { randomInt } from 'node:crypto';
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { resolve, dirname, extname, sep } from 'node:path';
 import { League, blankData } from './league.mjs';
 import { loadBattle } from '../src/api/battleSetup.ts';
 import { savedTeams } from './teams.mjs';
+import { createStore } from './firestore.mjs';
 
 const port = Number(process.env.LEAGUE_PORT || 3001);
 const dbPath = resolve(process.env.LEAGUE_DATABASE || '.league/league.sqlite');
@@ -29,33 +30,19 @@ for (const m of Object.values(data.matches)) {
   if (m.status === 'loading') { m.status = 'preparing'; m.ready = [false, false]; }
   if (m.status === 'battle') { m.deadline = Date.now() + 90000; m.players.forEach(id => league.touch(id)); }
 }
-const streams = new Set(), limits = new Map();
-const supabaseUrl = process.env.SUPABASE_URL || '';
-const supabaseKey = process.env.SUPABASE_PUBLISHABLE_KEY || '';
-const digest = token => createHash('sha256').update(token).digest('hex');
+const limits = new Map();
+// Storage stays local SQLite in dev, but auth still goes through the same Firebase project
+// as production (server/firestore.mjs) so the frontend doesn't need a dev-only code path.
+// Left undefined (rather than throwing at startup) so guest play still works before Firebase
+// is configured; only 'session'/'poll'/etc. (which all require a bearer token) need it.
+let auth;
+try { auth = createStore().auth; } catch { /* not configured yet */ }
 const json = (res, status, body) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
-function session(req) {
-  const token = /(?:^|;\s*)league_session=([a-f0-9]{64})/.exec(req.headers.cookie || '')?.[1];
-  const s = token && data.sessions[digest(token)];
-  return s && s.expires > Date.now() ? { ...s, hash: digest(token) } : null;
-}
-function issue(res, id, old) {
-  if (old) delete data.sessions[old.hash];
-  const token = randomBytes(32).toString('hex');
-  data.sessions[digest(token)] = { userId: id, expires: Date.now() + 7 * 86400000 };
-  res.setHeader('Set-Cookie', `league_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`);
-  league.touch(id); league.commit();
-}
-function push() {
-  for (const stream of streams) {
-    try {
-      if (!data.sessions[stream.session.hash] || stream.session.expires <= Date.now()) { stream.res.end(); continue; }
-      const body = { lobby: league.snapshot(stream.session.userId), match: stream.matchId ? league.viewMatch(stream.session.userId, stream.matchId) : null,
-        invitation: stream.inviteId ? league.invitation(stream.session.userId, stream.inviteId) : null };
-      const encoded = JSON.stringify(body);
-      if (encoded !== stream.last) { stream.res.write(`data: ${encoded}\n\n`); stream.last = encoded; }
-    } catch { stream.res.end(); }
-  }
+function firebaseWebConfig() {
+  const { FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, FIREBASE_PROJECT_ID, FIREBASE_STORAGE_BUCKET, FIREBASE_MESSAGING_SENDER_ID, FIREBASE_APP_ID } = process.env;
+  if (!FIREBASE_API_KEY || !FIREBASE_PROJECT_ID || !FIREBASE_APP_ID) return null;
+  return { apiKey: FIREBASE_API_KEY, authDomain: FIREBASE_AUTH_DOMAIN, projectId: FIREBASE_PROJECT_ID,
+    storageBucket: FIREBASE_STORAGE_BUCKET, messagingSenderId: FIREBASE_MESSAGING_SENDER_ID, appId: FIREBASE_APP_ID };
 }
 const server = createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -70,59 +57,44 @@ const server = createServer(async (req, res) => {
   }
     const origin = req.headers.origin;
     if (origin && !(process.env.LEAGUE_ORIGINS || 'http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174').split(',').includes(origin)) throw Object.assign(new Error('Origin not allowed.'), { status: 403 });
-    const s = session(req), path = url.pathname.slice('/api/league/'.length);
-    if (req.method === 'GET' && path === 'config') return json(res, 200, { supabaseUrl, supabaseKey, accounts: !!(supabaseUrl && supabaseKey) });
-    if (req.method === 'GET' && path === 'poll') {
-      if (!s) return json(res, 401, { error: 'Session expired. Sign in again.' });
-      league.touch(s.userId, url.searchParams.get('away') === 'true'); league.tick();
-      return json(res, 200, { lobby: league.snapshot(s.userId),
-        match: url.searchParams.get('match') ? league.viewMatch(s.userId, url.searchParams.get('match')) : null,
-        invitation: url.searchParams.get('invite') ? league.invitation(s.userId, url.searchParams.get('invite')) : null });
-    }
-    if (req.method === 'GET' && path === 'events') {
-      if (!s) return json(res, 401, { error: 'Sign in or continue as guest.' });
-      if ([...streams].filter(x => x.session.userId === s.userId).length >= 5) return json(res, 429, { error: 'Too many open connections.' });
-      const matchId = url.searchParams.get('match');
-      const inviteId = url.searchParams.get('invite');
-      if (matchId) league.match(s.userId, matchId);
-      if (inviteId) league.invitation(s.userId, inviteId);
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
-      const stream = { res, session: s, matchId, inviteId, last: '' }; streams.add(stream); league.touch(s.userId); push();
-      res.on('close', () => streams.delete(stream)); return;
-    }
-    if (req.method === 'GET' && path === 'session') return s ? json(res, 200, league.snapshot(s.userId)) : json(res, 401, { error: 'Sign in or continue as guest.' });
-    if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed.' });
-    if (!req.headers['content-type']?.startsWith('application/json')) return json(res, 415, { error: 'JSON required.' });
-    const key = s?.userId || req.socket.remoteAddress;
-    const bucket = limits.get(key) || { count: 0, reset: Date.now() + 60000 };
+    const path = url.pathname.slice('/api/league/'.length);
+    if (req.method === 'GET' && path === 'config') return json(res, 200, { firebase: firebaseWebConfig(), accounts: !!firebaseWebConfig() });
+    if (req.method === 'GET' && !['session', 'poll'].includes(path)) return json(res, 404, { error: 'Not found.' });
+    if (!['GET', 'POST'].includes(req.method)) return json(res, 405, { error: 'Method not allowed.' });
+
+    const bearer = /^Bearer (.+)$/.exec(req.headers.authorization || '')?.[1];
+    if (!bearer) return json(res, 401, { error: 'Sign in or continue as guest.' });
+    if (!auth) return json(res, 503, { error: 'Account sign-in has not been configured on this server.' });
+    let decoded;
+    try { decoded = await auth.verifyIdToken(bearer); } catch { return json(res, 401, { error: 'Sign-in expired. Please sign in again.' }); }
+    const id = decoded.uid, isAnonymous = decoded.firebase?.sign_in_provider === 'anonymous';
+
+    const bucket = limits.get(id) || { count: 0, reset: Date.now() + 60000 };
     if (bucket.reset < Date.now()) { bucket.count = 0; bucket.reset = Date.now() + 60000; }
-    bucket.count++; limits.set(key, bucket);
+    bucket.count++; limits.set(id, bucket);
     if (bucket.count > 90) return json(res, 429, { error: 'Too many requests. Try again in a minute.' });
-    let raw = '';
-    for await (const chunk of req) { raw += chunk; if (raw.length > 16384) return json(res, 413, { error: 'Request too large.' }); }
-    const input = JSON.parse(raw || '{}');
-    if (path === 'guest') {
-      if (s) return json(res, 200, league.snapshot(s.userId));
-      const u = league.createUser(); issue(res, u.id); push(); return json(res, 200, league.snapshot(u.id));
+
+    let input = {};
+    if (req.method === 'POST') {
+      if (!req.headers['content-type']?.startsWith('application/json')) return json(res, 415, { error: 'JSON required.' });
+      let raw = '';
+      for await (const chunk of req) { raw += chunk; if (raw.length > 16384) return json(res, 413, { error: 'Request too large.' }); }
+      input = JSON.parse(raw || '{}');
     }
-    if (path === 'auth') {
-      if (!supabaseUrl || !supabaseKey) return json(res, 503, { error: 'Account sign-in has not been configured. Guest battles are available.' });
-      if (typeof input.token !== 'string' || input.token.length > 8192) return json(res, 401, { error: 'Invalid sign-in token.' });
-      const response = await fetch(`${supabaseUrl}/auth/v1/user`, { headers: { apikey: supabaseKey, Authorization: `Bearer ${input.token}` }, signal: AbortSignal.timeout(10000) });
-      if (response.status === 429) return json(res, 429, { error: 'The accounts service is busy. Please try again shortly.' });
-      if (response.status >= 500) return json(res, 503, { error: 'The accounts service is temporarily unavailable. Please try again.' });
-      if (!response.ok) return json(res, 401, { error: 'Sign-in expired. Please sign in again.' });
-      const verified = await response.json();
-      if (!verified.id || !verified.email_confirmed_at) return json(res, 401, { error: 'Verify your email before signing in.' });
-      const u = league.account(verified.id, s?.userId); issue(res, u.id, s); push(); return json(res, 200, league.snapshot(u.id));
-    }
-    if (!s) return json(res, 401, { error: 'Session expired. Sign in again.' });
-    const id = s.userId; league.touch(id, !!input.away); league.tick();
+
+    if (!data.users[id]) league.createUser(id, isAnonymous);
+    else if (!isAnonymous && data.users[id].guest) league.claim(id);
+    league.touch(id, path === 'poll' ? url.searchParams.get('away') === 'true' : !!input.away);
+    league.tick();
+
     let result = {};
     switch (path) {
-      case 'logout': delete data.sessions[s.hash]; league.commit(); res.setHeader('Set-Cookie', 'league_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); break;
+      case 'session': result = league.snapshot(id); break;
+      case 'poll': result = { lobby: league.snapshot(id),
+        match: url.searchParams.get('match') ? league.viewMatch(id, url.searchParams.get('match')) : null,
+        invitation: url.searchParams.get('invite') ? league.invitation(id, url.searchParams.get('invite')) : null }; break;
       case 'heartbeat': break;
-      case 'teams': result = savedTeams(data, id, input); league.commit(); break;
+      case 'teams': result = savedTeams(data, id, input); break;
       case 'profile': league.edit(id, input); break;
       case 'friends': league.friend(id, input); break;
       case 'search': result = { trainers: league.search(id, input.query) }; break;
@@ -132,7 +104,6 @@ const server = createServer(async (req, res) => {
       case 'match': result = league.viewMatch(id, input.id); break;
       case 'ready': {
         const hydrate = league.markReady(id, input.id, input.roster);
-        push();
         if (hydrate) {
           let timeout;
           try {
@@ -143,7 +114,6 @@ const server = createServer(async (req, res) => {
             league.applyBattle(hydrate.matchId, loaded);
           } catch { league.failReady(hydrate.matchId); }
           finally { clearTimeout(timeout); }
-          push();
         }
         result = league.viewMatch(id, input.id); break;
       }
@@ -151,18 +121,17 @@ const server = createServer(async (req, res) => {
       case 'rematch': result = { matchId: league.rematch(id, input.id) }; break;
       default: return json(res, 404, { error: 'Not found' });
     }
-    push(); json(res, 200, result);
-  } catch (error) { json(res, error.status || 400, { error: error.status || error instanceof SyntaxError ? error.message : 'Unable to complete this request. Please try again.' }); }
+    league.commit();
+    json(res, 200, result);
+  } catch (error) { json(res, error.status || 400, { error: error.status ? error.message : error instanceof SyntaxError ? 'Invalid JSON.' : 'Unable to complete this request. Please try again.' }); }
 });
 setInterval(() => {
-  league.tick(); push();
-  for (const stream of streams) stream.res.write(': heartbeat\n\n');
+  league.tick();
   for (const [key, bucket] of limits) if (bucket.reset < Date.now()) limits.delete(key);
 }, 3000).unref();
 setInterval(() => {
-  for (const [key, s] of Object.entries(data.sessions)) if (s.expires < Date.now()) delete data.sessions[key];
   for (const [key, c] of Object.entries(data.challenges)) if (c.expires < Date.now() - 86400000) delete data.challenges[key];
-  for (const [id, u] of Object.entries(data.users)) if (!u.authId && u.created < Date.now() - 30 * 86400000 && !league.active(id) && !Object.values(data.matches).some(m => m.players.includes(id))) delete data.users[id];
+  for (const [id, u] of Object.entries(data.users)) if (u.guest && u.created < Date.now() - 30 * 86400000 && !league.active(id) && !Object.values(data.matches).some(m => m.players.includes(id))) delete data.users[id];
   league.commit();
 }, 3600000).unref();
 server.listen(port, '0.0.0.0', () => console.log(`League server: http://localhost:${port}`));

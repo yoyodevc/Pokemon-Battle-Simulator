@@ -7,7 +7,7 @@ import { emptyStages } from '../src/engine/stats.ts';
 function setup() {
   let time = 1000000;
   const league = new League(undefined, undefined, () => time);
-  const a = league.createUser('auth-a', 'Alice'), b = league.createUser('auth-b', 'Bob');
+  const a = league.createUser('auth-a', false, 'Alice'), b = league.createUser('auth-b', false, 'Bob');
   league.touch(a.id); league.touch(b.id);
   return { league, a, b, advance: ms => { time += ms; } };
 }
@@ -34,12 +34,12 @@ test('friend requests require the recipient; blocks remove friendship and preven
   assert.throws(() => league.challenge(a.id, b.id));
 });
 test('guests can accept invitations, but cannot persist friendships', () => {
-  const { league, a } = setup(); const guest = league.createUser();
+  const { league, a } = setup(); const guest = league.createUser('guest-1', true);
   const c = league.challenge(a.id);
   assert.ok(league.respond(guest.id, c.id, 'accept'));
   assert.throws(() => league.friend(guest.id, { target: a.id, action: 'request' }));
-  const upgraded = league.account('new-auth', guest.id);
-  assert.equal(upgraded.id, guest.id); assert.equal(upgraded.authId, 'new-auth');
+  const upgraded = league.claim(guest.id);
+  assert.equal(upgraded.id, guest.id); assert.equal(upgraded.guest, false);
 });
 test('invitation acceptance is single-use and prevents conflicting matches', () => {
   const { league, a, b } = setup(); const c = league.challenge(a.id);
@@ -112,7 +112,7 @@ test('persisted snapshots restore locked actions, friendships, and account ident
   const restored = new League(JSON.parse(JSON.stringify(league.data)));
   assert.equal(restored.viewMatch(a.id, id).submitted, true);
   assert.equal(restored.snapshot(b.id).friends[0].from, a.id);
-  assert.equal(restored.account('auth-a').id, a.id);
+  assert.equal(restored.user(a.id).guest, false);
 });
 test('natural knockout completion records a win and preserves revealed opponents', async () => {
   const ctx = setup(), id = await battle(ctx), { league, a, b } = ctx;

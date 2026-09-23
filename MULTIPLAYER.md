@@ -4,11 +4,14 @@
 
 Requires Node.js 24 or later. Run `npm install` and `npm run dev`.
 The command starts Vite and the authoritative League server together. Open the
-Vite URL followed by `/#league`. Guests need no Supabase configuration.
+Vite URL followed by `/#league`. A Firebase project must be configured (see
+Accounts below) — even guests sign in through Firebase Anonymous Auth, so there
+is no guest-only mode that skips Firebase entirely.
 
 Create a duel invitation, open it in another browser profile or private window,
 accept it, and lock both teams. Different tabs in the same browser profile share
-one trainer session. CPU and pass-and-play battles remain under `/#battle`.
+one trainer session (Firebase persists the signed-in user to that browser).
+CPU and pass-and-play battles remain under `/#battle`.
 
 The backend defaults to port 3001. To change it, update `LEAGUE_PORT` in `.env`
 and the corresponding Vite proxy target. Vite can choose another available
@@ -16,26 +19,34 @@ frontend port; include its exact origin in `LEAGUE_ORIGINS`.
 
 ## Accounts
 
-Supabase handles registration, email verification, password login, and password
-recovery. The League server validates the Supabase access token directly with
-Supabase before issuing its own HttpOnly, SameSite session cookie. Passwords
-are never handled or stored by the League server.
+Firebase Authentication handles registration, password login, and password
+recovery. Guests are Firebase **Anonymous** users, not a bespoke cookie —
+"Create an account" links that same anonymous identity to a real email/password
+(`linkWithCredential`), keeping the same trainer, friends, and history. The
+League server verifies the client's Firebase ID token directly (a local,
+stateless JWT check — no network round trip and no server-side session to
+manage) before touching any data. Passwords are never handled or stored by the
+League server.
 
-1. Create a Supabase project with email/password authentication enabled.
-2. Set `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` in `.env`, using
-   `.env.example` as the reference. Use the publishable/anonymous key, never a
-   secret or service-role key. These public values are supplied to the client.
-3. In Supabase Authentication URL Configuration, set the site URL to the
-   frontend origin and allow that origin's `/**` redirect URLs. For local
-   testing, include `http://localhost:5174/**` and the actual Vite origin.
-4. Keep email confirmation enabled. Configure a real SMTP provider before
-   inviting public users; provider defaults may restrict email delivery.
-5. Restart the server. Create and verify an account from the Lounge.
+1. Create a Firebase project and enable the **Anonymous** and **Email/Password**
+   sign-in providers under Authentication.
+2. Set `FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_PROJECT_ID`,
+   `FIREBASE_STORAGE_BUCKET`, `FIREBASE_MESSAGING_SENDER_ID`, and
+   `FIREBASE_APP_ID` in `.env` (the public web config — safe to expose to the
+   client), plus `FIREBASE_SERVICE_ACCOUNT_PATH` (server-only) pointing at a
+   downloaded service-account key. See `.env.example`.
+3. In Firebase Authentication > Settings > Authorized domains, add
+   `localhost` (usually present by default) and any other origin you test from.
+4. Create a Firestore database for the project (see DEPLOYMENT.md) and deploy
+   `firestore.rules`/`firestore.indexes.json`.
+5. Restart the server. Playing as a guest and creating an account both work
+   immediately — there is no email-confirmation gate to configure.
 
-An authenticated account created from a guest session retains the guest's
-trainer ID and battles when that account does not already have a trainer.
-Signing into an existing trainer restores that trainer instead of merging
-two identities. Guest cookies expire after seven days.
+Signing up from a guest session upgrades that same guest in place (same
+trainer id, friends, and history) rather than creating a second identity.
+Signing into a separate, already-registered account switches to that trainer
+instead. Guest identity persists as long as Firebase keeps that browser signed
+in — there is no fixed expiry.
 
 ## State and rules
 
@@ -57,36 +68,51 @@ two identities. Guest cookies expire after seven days.
 - Rematch: both trainers must request it. A fresh preparation room is created.
 - Privacy: opponents cannot read hidden roster members, unused moves, queued
   actions, or the random seed. Used moves and revealed Pokemon remain public.
+  This is enforced server-side (`server/league.mjs`'s `viewMatch`), which is
+  also why the frontend never reads Firestore directly — there is no way to
+  express this per-viewer redaction in Firestore security rules.
 
-SQLite persists profiles, hashed session tokens, social relationships,
-invitations, and match snapshots in `.league/league.sqlite`. The initial schema
-is applied automatically from `server/schema.sql` (`user_version = 1`). Back up
-the SQLite database using SQLite's backup API or while the server is stopped;
-WAL files may contain recent transactions. `.league` and `.env` are gitignored.
-Presence is transient. On restart, live battles receive a fresh reconnect window;
-interrupted team loading returns to preparation.
+SQLite persists profiles, social relationships, invitations, and match
+snapshots in `.league/league.sqlite` for local development (`server/index.mjs`,
+one row per entity in `server/schema.sql`, `user_version = 1`). Production
+(Netlify) instead persists one Firestore document per entity — see
+DEPLOYMENT.md. Back up the SQLite database using SQLite's backup API or while
+the server is stopped; WAL files may contain recent transactions. `.league` and
+`.env` are gitignored. Presence is transient. On restart, live battles receive
+a fresh reconnect window; interrupted team loading returns to preparation.
 
 ## Deployment
 
-This implementation needs a long-running, **single-instance Node server and a
-persistent disk**. It is not a static-only deployment or a Cloudflare Worker.
-Keep all installed dependencies available to the server's TypeScript loader.
+Self-hosting needs a long-running, **single-instance Node server and a
+persistent disk** for its SQLite database. It is not a static-only deployment
+or a Cloudflare Worker. Keep all installed dependencies available to the
+server's TypeScript loader. Even self-hosted, sign-in still goes through the
+Firebase project configured above (`FIREBASE_SERVICE_ACCOUNT_PATH`/
+`FIREBASE_SERVICE_ACCOUNT` must be set on that host).
 
 Run `npm run build`, then `npm start`. The League server serves both the built
 frontend and `/api/league`. Put it behind an HTTPS reverse proxy, set
 `NODE_ENV=production`, and set `LEAGUE_ORIGINS` to the exact public origin.
-Preserve SSE streaming and disable reverse-proxy buffering on `/api/league/events`.
 Persist `LEAGUE_DATABASE` on the deployment volume. Never expose the SQLite file.
 Do not run multiple replicas against independent copies of the database.
 
+For a serverless deployment (no persistent disk, e.g. Netlify), see
+DEPLOYMENT.md — that path stores state in Firestore instead of SQLite, since
+concurrent function instances can't safely share a single local file.
+
 For LAN development, open the Vite network URL, add that origin to
-`LEAGUE_ORIGINS`, and share invitations created from that network URL.
-`localhost` invitations cannot be opened from another computer.
+`LEAGUE_ORIGINS` and to Firebase's authorized domains, and share invitations
+created from that network URL. `localhost` invitations cannot be opened from
+another computer.
 
 ## Verification
 
 - `npm run build`: frontend typechecking and production assets.
-- `npm run test:league`: server authorization and multiplayer lifecycle tests.
+- `npm run test:league`: server authorization and multiplayer lifecycle tests
+  (`server/league.test.mjs`, storage-agnostic).
+- `node --import ./server/register.mjs --test server/serverless.test.mjs`:
+  the Firestore-backed serverless handler, against an in-memory fake that
+  replicates Firestore's real transaction read-set-versioning.
 - `npm test -- --run src/engine/turn.test.ts`: existing battle-engine checks.
 - `node scripts/league-browser-check.mjs <path-to-playwright/index.js>`:
   two independent browser contexts, invitation, team lock, real turn resolution,
@@ -95,5 +121,5 @@ For LAN development, open the Vite network URL, add that origin to
 
 External PokeAPI access is required for roster and battle-data hydration.
 Starter sprites are bundled; other Pokemon sprites load from Pokemon Showdown.
-Supabase signup, confirmation-email delivery, and password reset must be verified
-against the configured project before public release.
+Firebase sign-up, sign-in, and password reset must be verified against the
+configured project before public release.
