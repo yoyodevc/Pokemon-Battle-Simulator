@@ -117,31 +117,45 @@ export class League {
     if (!m || !m.players.includes(id)) fail('Match not found.', 404);
     return m;
   }
-  async ready(id, matchId, roster, loadBattle) {
+  /**
+   * Synchronous half of readying up: validates and records this side's roster. Returns
+   * null unless both sides are now ready, in which case the match moves to 'loading' and
+   * the caller must hydrate the rosters (a slow, external-network step) and report back
+   * via applyBattle/failReady. Kept separate so the slow step never runs inside a held
+   * database transaction (see server/serverless.mjs).
+   */
+  markReady(id, matchId, roster) {
     const m = this.match(id, matchId), side = m.players.indexOf(id);
     if (m.status !== 'preparing') fail('This room is no longer preparing.', 409);
     if (!Array.isArray(roster) || roster.length !== 6 || new Set(roster).size !== 6 || roster.some(n => typeof n !== 'string' || !/^[a-z0-9-]{1,40}$/.test(n))) fail('Select six different Pokemon.');
-    m.rosters[side] = roster; m.ready[side] = true; delete m.error; this.commit();
-    if (!m.ready.every(Boolean)) return;
+    m.rosters[side] = roster; m.ready[side] = true; delete m.error;
+    if (!m.ready.every(Boolean)) { this.commit(); return null; }
     m.status = 'loading'; this.commit();
-    let timeout;
-    try {
-      const loaded = await Promise.race([
-        loadBattle(m.rosters[0], m.rosters[1], 'local', randomInt(1, 0xffffffff)),
-        new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('Team loading timed out')), 120000); timeout.unref?.(); }),
-      ]);
-      if (m.status !== 'loading') return;
-      const teams = loaded.initial.teams;
-      teams.forEach((t, s) => { t.name = this.user(m.players[s]).username; });
-      m.state = createBattle(teams, loaded.initial.chart, randomInt(1, 0xffffffff));
-      m.revealed = [[m.state.teams[0].active], [m.state.teams[1].active]];
-      m.status = 'battle'; m.deadline = this.now() + 90000; m.version += 1;
-      delete m.error;
-    } catch {
-      if (m.status !== 'loading') return;
-      m.status = 'preparing'; m.ready = [false, false]; m.error = 'Team data could not be loaded. Please ready up again.';
-    } finally { clearTimeout(timeout); }
+    return { matchId, rosters: [m.rosters[0], m.rosters[1]] };
+  }
+  applyBattle(matchId, loaded) {
+    const m = this.data.matches[matchId];
+    if (!m || m.status !== 'loading') return;
+    const teams = loaded.initial.teams;
+    teams.forEach((t, s) => { t.name = this.user(m.players[s]).username; });
+    m.state = createBattle(teams, loaded.initial.chart, randomInt(1, 0xffffffff));
+    m.revealed = [[m.state.teams[0].active], [m.state.teams[1].active]];
+    m.status = 'battle'; m.deadline = this.now() + 90000; m.version += 1;
+    delete m.error;
     this.commit();
+  }
+  failReady(matchId, message = 'Team data could not be loaded. Please ready up again.') {
+    const m = this.data.matches[matchId];
+    if (!m || m.status !== 'loading') return;
+    m.status = 'preparing'; m.ready = [false, false]; m.error = message;
+    this.commit();
+  }
+  /** Convenience wrapper composing markReady/applyBattle/failReady for direct, single-process callers (tests, scripts). */
+  async ready(id, matchId, roster, loadBattle) {
+    const hydrate = this.markReady(id, matchId, roster);
+    if (!hydrate) return;
+    try { this.applyBattle(matchId, await loadBattle(hydrate.rosters[0], hydrate.rosters[1], 'local', randomInt(1, 0xffffffff))); }
+    catch { this.failReady(matchId); }
   }
   finish(m, winner, reason) {
     m.status = 'ended'; m.winner = winner; m.reason = reason; m.ended = this.now(); m.version += 1;

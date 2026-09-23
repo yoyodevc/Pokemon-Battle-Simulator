@@ -1,6 +1,6 @@
 import './register.mjs';
 import { createServer } from 'node:http';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { resolve, dirname, extname, sep } from 'node:path';
@@ -131,8 +131,21 @@ const server = createServer(async (req, res) => {
       case 'respond': result = { matchId: league.respond(id, input.id, input.action) }; break;
       case 'match': result = league.viewMatch(id, input.id); break;
       case 'ready': {
-        const pending = league.ready(id, input.id, input.roster, loadServerBattle);
-        push(); await pending; result = league.viewMatch(id, input.id); break;
+        const hydrate = league.markReady(id, input.id, input.roster);
+        push();
+        if (hydrate) {
+          let timeout;
+          try {
+            const loaded = await Promise.race([
+              loadServerBattle(hydrate.rosters[0], hydrate.rosters[1], 'local', randomInt(1, 0xffffffff)),
+              new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('Team loading timed out')), 120000); timeout.unref?.(); }),
+            ]);
+            league.applyBattle(hydrate.matchId, loaded);
+          } catch { league.failReady(hydrate.matchId); }
+          finally { clearTimeout(timeout); }
+          push();
+        }
+        result = league.viewMatch(id, input.id); break;
       }
       case 'action': league.act(id, input.id, input.action, input.version); break;
       case 'rematch': result = { matchId: league.rematch(id, input.id) }; break;

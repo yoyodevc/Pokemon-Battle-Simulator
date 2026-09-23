@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { League } from './league.mjs';
 import { loadBattle } from '../src/api/battleSetup.ts';
 import { transact } from './supabase-store.mjs';
@@ -52,7 +52,7 @@ export async function handle(request, store, { ip = 'unknown', loader = loadBatt
       try { return await Promise.race([loader(...args), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Team loading timed out.')), 20000); })]); }
       finally { clearTimeout(timer); }
     })();
-    const result = await transact(store, async data => {
+    const prepare = data => {
       data.presence ??= {}; data.limits ??= {};
       const league = new League(data);
       league.presence = new Map(Object.entries(data.presence));
@@ -61,6 +61,15 @@ export async function handle(request, store, { ip = 'unknown', loader = loadBatt
       for (const [key, bucket] of Object.entries(data.limits)) if (bucket.reset <= now) delete data.limits[key];
       for (const [key, p] of league.presence) if (now - p.seen > 86400000) league.presence.delete(key);
       for (const [key, c] of Object.entries(data.challenges)) if (c.expires < now - 86400000) delete data.challenges[key];
+      return league;
+    };
+    // 'ready' only records this side's roster here; when both sides are ready this holds
+    // the match/rosters to hydrate *after* the transaction below has committed, so the slow,
+    // external PokeAPI hydration never holds a stale read open against the shared row.
+    let hydrate = null, userId;
+    const result = await transact(store, async data => {
+      const league = prepare(data);
+      const now = Date.now();
       const session = hash && data.sessions[hash];
       const bucket = data.limits[session?.userId || ip] ??= { count: 0, reset: now + 60000 };
       if (++bucket.count > 90) return { status: 429, body: { error: 'Too many requests. Try again in a minute.' } };
@@ -75,6 +84,7 @@ export async function handle(request, store, { ip = 'unknown', loader = loadBatt
       if (path === 'guest' && !id) issue(league.createUser().id);
       if (path === 'auth' && (!id || data.users[id]?.authId !== verified.id)) issue(league.account(verified.id, id).id);
       if (!id) fail('Session expired. Sign in again.', 401);
+      userId = id;
       league.touch(id, path === 'poll' ? url.searchParams.get('away') === 'true' : !!input.away);
       league.tick();
       switch (path) {
@@ -92,7 +102,7 @@ export async function handle(request, store, { ip = 'unknown', loader = loadBatt
         case 'invitation': body = league.invitation(id, input.id); break;
         case 'respond': body = { matchId: league.respond(id, input.id, input.action) }; break;
         case 'match': body = league.viewMatch(id, input.id); break;
-        case 'ready': await league.ready(id, input.id, input.roster, cachedLoader); body = league.viewMatch(id, input.id); break;
+        case 'ready': hydrate = league.markReady(id, input.id, input.roster); body = league.viewMatch(id, input.id); break;
         case 'action': league.act(id, input.id, input.action, input.version); break;
         case 'rematch': body = { matchId: league.rematch(id, input.id) }; break;
         default: fail('Not found.', 404);
@@ -100,6 +110,18 @@ export async function handle(request, store, { ip = 'unknown', loader = loadBatt
       data.presence = Object.fromEntries(league.presence);
       return { status: 200, body, cookie };
     });
+    if (hydrate && result.status === 200) {
+      let loadedBattle, failed = false;
+      try { loadedBattle = await cachedLoader(hydrate.rosters[0], hydrate.rosters[1], 'local', randomInt(1, 0xffffffff)); }
+      catch { failed = true; }
+      const followUp = await transact(store, async data => {
+        const league = prepare(data);
+        if (failed) league.failReady(hydrate.matchId); else league.applyBattle(hydrate.matchId, loadedBattle);
+        data.presence = Object.fromEntries(league.presence);
+        return { status: 200, body: league.viewMatch(userId, hydrate.matchId) };
+      });
+      result.body = followUp.body;
+    }
     return json(result.status, result.body, result.cookie ? { 'Set-Cookie': result.cookie } : {});
   } catch (error) {
     // Unexpected failures are otherwise invisible in function logs, which makes
