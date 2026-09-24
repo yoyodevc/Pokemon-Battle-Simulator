@@ -1,8 +1,8 @@
 # Pokémon Battle Simulator
 
 A browser-based Pokémon battle simulator built on live [PokéAPI](https://pokeapi.co/) data.
-React 18 + Vite + TypeScript + Tailwind CSS, with no backend and no state library beyond
-`useReducer` and Context.
+React 18 + Vite + TypeScript + Tailwind CSS. The online League uses Firebase Auth and
+Firestore; local battles use `useReducer` and Context.
 
 ## Requirements
 
@@ -36,8 +36,17 @@ src/
   state/        Reducer and Context wiring the engine to React (Phase 3)
   components/   UI
   App.tsx
+server/         Online League API and Firestore access
+netlify/        League function for production
 preview/        Dev-only design sandbox (see below) — not part of the build
 ```
+
+### Online League loading
+
+Locally, the League API runs in the Node server. On Netlify, the same API runs in a
+function and reads Firebase Auth and Firestore over the network. Initial session loading
+now runs the independent lobby reads alongside the core session work, reducing one
+serial wait. Actual load time still depends on network and Firebase response times.
 
 ### Battle UI
 

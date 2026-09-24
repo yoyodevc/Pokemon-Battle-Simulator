@@ -183,7 +183,7 @@ export async function handle(request, store, { loader = loadBattle, verify } = {
     }
 
     let hydrate = null;
-    const core = await withDocs(db, plan, async data => {
+    const [core, sessionExtras] = await Promise.all([withDocs(db, plan, async data => {
       const league = buildLeague(data);
       if (!data.users[uid]) league.createUser(uid, isAnonymous);
       else if (!isAnonymous && data.users[uid].guest) league.claim(uid);
@@ -213,7 +213,7 @@ export async function handle(request, store, { loader = loadBattle, verify } = {
       }
       data.presence = Object.fromEntries(league.presence);
       return { body, data };
-    });
+    }), path === 'session' ? loadLobbyExtras(db, uid) : null]);
 
     if (hydrate) {
       let loadedBattle, failed = false;
@@ -230,7 +230,7 @@ export async function handle(request, store, { loader = loadBattle, verify } = {
 
     let body = core.body;
     if (path === 'session' || path === 'poll') {
-      const extras = await loadLobbyExtras(db, uid);
+      const extras = sessionExtras ?? await loadLobbyExtras(db, uid);
       const lobby = assembleLobby(core.data, extras, uid);
       body = path === 'session' ? lobby : { lobby, ...core.body };
     }
