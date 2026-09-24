@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { EmailAuthProvider, confirmPasswordReset, createUserWithEmailAndPassword, linkWithCredential, sendPasswordResetEmail, signInAnonymously, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { firebaseAuth, authMessage, avatar, LeagueError, request, restoreLeagueSession, type Config, type Invitation, type Lobby, type Match, type Trainer } from './client';
+import { firebaseAuth, authMessage, avatar, LeagueError, request, restoreLeagueSession, streamMatch, type Config, type Invitation, type Lobby, type Match, type Trainer } from './client';
 import OnlineBattle from './OnlineBattle';
 import ReplayViewer from './ReplayViewer';
 import ChallengeInbox from './ChallengeInbox';
@@ -34,10 +34,12 @@ export default function LeaguePage({ route }: { route: string }) {
   const [error, setError] = useState('');
   const [connectionError, setConnectionError] = useState('');
   const [notice, setNotice] = useState('');
+  const [copiedInviteId, setCopiedInviteId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [connectionAttempt, setConnectionAttempt] = useState(0);
   const [connected, setConnected] = useState(false);
+  const [ping, setPing] = useState<number | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'register' | 'reset' | 'password'>('login');
   const [resetCode, setResetCode] = useState<string | null>(null);
@@ -91,11 +93,14 @@ export default function LeaguePage({ route }: { route: string }) {
     if (!lobby) return;
     let live = true, timer: number;
     const poll = async () => {
+      let failed = false;
       try {
         const revision = lobbyRevision.current;
         const query = new URLSearchParams({ away: String(document.hidden), ...(matchId ? { match: matchId } : inviteId ? { invite: inviteId } : {}) });
-        const data = await request<{ lobby: Lobby; match: Match | null; invitation: Invitation | null }>(`poll?${query}`);
+        const started = performance.now();
+        const data = await request<{ lobby: Lobby; match: Match | null; invitation: Invitation | null }>(`poll?${query}`, undefined, 12000);
         if (!live) return;
+        setPing(Math.round(performance.now() - started));
         setConnected(true); setConnectionError('');
         const incoming = data.lobby.challenges.filter(c => c.to?.id === data.lobby.user.id);
         if (lastChallenges.current && incoming.some(c => !lastChallenges.current!.has(c.id))) setNotice('A trainer challenged you to a duel.');
@@ -108,12 +113,30 @@ export default function LeaguePage({ route }: { route: string }) {
         }
         if (data.match?.next) goMatch(data.match.next);
       } catch (e) {
-        if (live) { setConnected(false); setConnectionError(message(e)); if (e instanceof LeagueError && e.status === 401) setLobby(null); }
-      } finally { if (live) timer = window.setTimeout(() => void poll(), 10000); }
+        failed = true;
+        if (live) { setConnected(false); setPing(null); setConnectionError(message(e)); if (e instanceof LeagueError && e.status === 401) setLobby(null); }
+      } finally { if (live) timer = window.setTimeout(() => void poll(), failed ? 2000 : matchId ? 5000 : 10000); }
     };
     void poll();
     return () => { live = false; clearTimeout(timer); };
   }, [lobby?.user.id, matchId, inviteId]);
+
+  useEffect(() => {
+    if (!lobby?.user.id || !matchId) return;
+    const abort = new AbortController();
+    let timer: number;
+    const connect = async () => {
+      try {
+        await streamMatch(matchId, AbortSignal.any([abort.signal, AbortSignal.timeout(65000)]), incoming => {
+          setMatch(current => mergeMatch(current, incoming));
+          if (incoming.next) goMatch(incoming.next);
+        });
+      } catch { }
+      if (!abort.signal.aborted) timer = window.setTimeout(() => void connect(), 2000);
+    };
+    void connect();
+    return () => { abort.abort(); clearTimeout(timer); };
+  }, [lobby?.user.id, matchId]);
 
   useEffect(() => {
     setMatch(null); setInvitation(null); setReplay(null);
@@ -189,7 +212,8 @@ export default function LeaguePage({ route }: { route: string }) {
   if (lobby && replay) return <ReplayViewer key={replay.id} match={replay} user={lobby.user} onClose={() => setReplay(null)} />;
   if (lobby && match && (match.status === 'battle' || match.status === 'ended')) return <>
     {(error || connectionError) && <div className="lg-alert" role="alert">{error || connectionError}</div>}
-    <OnlineBattle match={match} user={lobby.user} busy={busy} connected={connected} run={run} onNotice={setNotice} onMatch={updateMatch} />
+
+    <OnlineBattle match={match} ping={ping} user={lobby.user} busy={busy} connected={connected} run={run} onNotice={setNotice} onMatch={updateMatch} />
   </>;
 
   return <main id="main-content" className={`league${matchId ? ' lg-in-match' : ''}`}>
@@ -203,9 +227,9 @@ export default function LeaguePage({ route }: { route: string }) {
     </div> : <>
       <div className="lg-playerbar"><div className="lg-inline"><Portrait trainer={lobby.user} /><div><strong>{lobby.user.username}</strong><small>{lobby.user.guest ? 'Guest trainer' : 'League trainer'} <span className={connected ? 'lg-live' : 'lg-muted'}>{connected ? ' / Connected' : ' / Reconnecting...'}</span></small></div></div><div className="lg-inline"><span className="lg-stat"><b>{lobby.stats.wins}</b> WINS</span><span className="lg-stat"><b>{lobby.stats.played}</b> MATCHES</span>{lobby.user.guest && <button className="lg-secondary" onClick={() => { setAuthMode('register'); setAccountOpen(true); }}>Keep my trainer</button>}<button className="lg-link" disabled={busy} onClick={() => void run(async () => { if (config?.accounts) await signOut(firebaseAuth(config)); setLobby(null); window.location.hash = 'league'; })}>Sign out</button></div></div>
       {accountOpen && <Modal label="Account" close={() => setAccountOpen(false)}><button className="lg-close" aria-label="Close account" onClick={() => setAccountOpen(false)}>&times;</button>{accountForm}</Modal>}
-      {matchId ? match ? <OnlineBattle match={match} user={lobby.user} busy={busy} connected={connected} run={run} onNotice={setNotice} onMatch={updateMatch} /> : <div className="lg-empty">{error ? <a href="#league">Return to lobby</a> : 'Opening match...'}</div> : <>
+      {matchId ? match ? <><OnlineBattle match={match} ping={ping} user={lobby.user} busy={busy} connected={connected} run={run} onNotice={setNotice} onMatch={updateMatch} /></> : <div className="lg-empty">{error ? <a href="#league">Return to lobby</a> : 'Opening match...'}</div> : <>
         {lobby.activeMatch && <div className="lg-resume"><span>Your match is still open.</span><button className="lg-primary" onClick={() => goMatch(lobby.activeMatch!)}>Return to match &#8594;</button></div>}
-        {invitation && <section className="lg-invitation"><div><span className="lg-kicker">6V6 / LEVEL 50 / STANDARD</span><h2>{invitation.from.id === lobby.user.id ? 'Your invitation is ready' : `${invitation.from.username} challenged you`}</h2><p>Expires {new Date(invitation.expires).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} &middot; {invitation.status}</p></div>{invitation.status === 'pending' && (invitation.from.id === lobby.user.id ? <div className="lg-invite-copy"><label>Invitation link<input readOnly value={`${location.origin}/#invite/${invitation.id}`} onFocus={e => e.target.select()} /></label><button className="lg-secondary" onClick={() => void run(async () => { await navigator.clipboard.writeText(`${location.origin}/#invite/${invitation.id}`); setNotice('Invitation link copied.'); })}>Copy link</button><button className="lg-link" disabled={busy} onClick={() => void respond(invitation.id, 'cancel')}>Cancel invitation</button></div> : <button className="lg-primary" disabled={busy || !!lobby.activeMatch} onClick={() => void respond(invitation.id, 'accept')}>Accept duel &#8594;</button>)}{invitation.matchId && <button className="lg-primary" onClick={() => goMatch(invitation.matchId!)}>Enter match</button>}</section>}
+        {invitation && <section className="lg-invitation"><div><span className="lg-kicker">6V6 / LEVEL 50 / STANDARD</span><h2>{invitation.from.id === lobby.user.id ? 'Your invitation is ready' : `${invitation.from.username} challenged you`}</h2><p>Expires {new Date(invitation.expires).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} &middot; {invitation.status}</p></div>{invitation.status === 'pending' && (invitation.from.id === lobby.user.id ? <div className="lg-invite-copy"><label>Invitation link<input readOnly value={`${location.origin}/#invite/${invitation.id}`} onFocus={e => e.target.select()} /></label><button className="lg-secondary" onClick={() => void run(async () => { await navigator.clipboard.writeText(`${location.origin}/#invite/${invitation.id}`); setCopiedInviteId(invitation.id); })}>{copiedInviteId === invitation.id ? 'Copied link' : 'Copy link'}</button><button className="lg-link" disabled={busy} onClick={() => void respond(invitation.id, 'cancel')}>Cancel invitation</button></div> : <button className="lg-primary" disabled={busy || !!lobby.activeMatch} onClick={() => void respond(invitation.id, 'accept')}>Accept duel &#8594;</button>)}{invitation.matchId && <button className="lg-primary" onClick={() => goMatch(invitation.matchId!)}>Enter match</button>}</section>}
         <nav className="lg-tabs" aria-label="League views">{(['lobby', 'friends', 'history', 'profile'] as const).map(t => <button key={t} aria-current={tab === t ? 'page' : undefined} onClick={() => setTab(t)}>{t === 'lobby' ? 'Overview' : t === 'history' ? 'Battle history' : t === 'profile' ? 'Trainer profile' : 'Friends'}{t === 'friends' && incomingFriends.length > 0 && <span>{incomingFriends.length}</span>}</button>)}</nav>
         {tab === 'lobby' && <div className="lg-dashboard"><section className="lg-play"><span className="lg-kicker">FRIENDLY BATTLE</span><h2>Bring your team.<br />Find your rival.</h2><div className="lg-play-art"><img src={avatar(149)} alt="Dragonite" /><img src={avatar(94)} alt="Gengar" /></div><div className="lg-inline"><button className="lg-primary" disabled={busy || !!lobby.activeMatch} onClick={() => void challenge()}>Create duel invitation <span>&#8594;</span></button><span className="lg-format">6 POKEMON<br />LEVEL 50</span></div></section><section className="lg-inbox"><div className="lg-section-title"><h2>Challenges</h2><span>{incoming.length}</span></div>{incoming.length === 0 ? <div className="lg-empty"><span className="brand-ball" /><h3>All quiet for now</h3><p>Your incoming duels will appear here.</p></div> : incoming.map(c => <div className="lg-person" key={c.id}><Portrait trainer={c.from} /><div className="lg-person-copy"><strong>{c.from.username}</strong><small>Standard 6v6 challenge</small></div><button className="lg-secondary" disabled={busy} onClick={() => void respond(c.id, 'accept')}>Accept</button><button className="lg-link" disabled={busy} onClick={() => void respond(c.id, 'decline')}>Decline</button></div>)}{lobby.challenges.filter(c => c.from.id === lobby.user.id).map(c => <div className="lg-person" key={c.id}><div className="lg-person-copy"><strong>{c.to?.username || 'Shareable invitation'}</strong><small>Awaiting a challenger</small></div><button className="lg-link" onClick={() => { setInvitation(c); window.location.hash = `invite/${c.id}`; }}>View</button><button className="lg-link" disabled={busy} onClick={() => void respond(c.id, 'cancel')}>Cancel</button></div>)}</section><section className="lg-friends-preview"><div className="lg-section-title"><h2>Your circle</h2><button className="lg-link" onClick={() => setTab('friends')}>View friends &#8594;</button></div>{lobby.friends.filter(f => f.status === 'accepted').length === 0 ? <p className="lg-muted">{lobby.user.guest ? 'Create an account to build your friends list.' : 'Every great rivalry starts with a friend request.'}</p> : lobby.friends.filter(f => f.status === 'accepted').slice(0, 5).map(f => <div className="lg-person" key={f.trainer.id}><Portrait trainer={f.trainer} /><div className="lg-person-copy"><strong>{f.trainer.username}</strong><small>{f.trainer.presence}</small></div><button className="lg-secondary" disabled={busy || !!lobby.activeMatch || f.trainer.presence === 'in battle'} onClick={() => void challenge(f.trainer.id)}>Challenge</button></div>)}</section></div>}
         {tab === 'friends' && <section className="lg-social"><div className="lg-section-title"><h2>Friends & rivals</h2><span>{lobby.friends.filter(f => f.status === 'accepted').length} friends</span></div>{lobby.user.guest ? <div className="lg-empty"><h3>Make your trainer permanent</h3><p>Accounts can find trainers and keep friendships.</p><button className="lg-primary" onClick={() => { setAuthMode('register'); setAccountOpen(true); }}>Create account</button></div> : <><form className="lg-search" onSubmit={e => { e.preventDefault(); void run(async () => { setSearching(true); try { setResults((await request<{ trainers: Trainer[] }>('search', { query: search })).trainers); setSearched(true); } finally { setSearching(false); } }); }}><label htmlFor="trainer-search">Find a trainer</label><div className="lg-inline"><input id="trainer-search" minLength={3} maxLength={20} placeholder="Trainer name" value={search} onChange={e => setSearch(e.target.value)} required /><button className="lg-primary" disabled={busy}>{searching ? 'Searching...' : 'Search'}</button></div></form>{searched && results.length === 0 && <p className="lg-form-feedback" role="status">No trainers found. Try another name.</p>}{results.map(t => <div className="lg-person" key={t.id}><Portrait trainer={t} /><div className="lg-person-copy"><strong>{t.username}</strong><small>{t.presence}</small></div><button className="lg-secondary" disabled={busy || lobby.friends.some(f => f.trainer.id === t.id)} onClick={() => void friendship(t.id, 'request')}>{friendPending === t.id ? 'Sending...' : lobby.friends.some(f => f.trainer.id === t.id && f.status === 'accepted') ? 'Friends' : lobby.friends.some(f => f.trainer.id === t.id) ? 'Request pending' : 'Add friend'}</button><button className="lg-link" disabled={busy} onClick={() => void friendship(t.id, 'block')}>Block</button></div>)}{lobby.friends.length === 0 && <p className="lg-muted">No friends yet. Search for a trainer by name.</p>}{lobby.friends.map(f => <div className="lg-person" key={f.trainer.id}><Portrait trainer={f.trainer} /><div className="lg-person-copy"><strong>{f.trainer.username}</strong><small>{f.status === 'accepted' ? f.trainer.presence : f.from === lobby.user.id ? 'Request sent' : 'Wants to be friends'}</small></div>{f.status === 'accepted' ? <><button className="lg-secondary" disabled={busy || !!lobby.activeMatch} onClick={() => void challenge(f.trainer.id)}>Challenge</button><button className="lg-link" disabled={busy} onClick={() => void friendship(f.trainer.id, 'remove')}>Remove</button></> : f.to === lobby.user.id ? <><button className="lg-secondary" disabled={busy} onClick={() => void friendship(f.trainer.id, 'accept')}>Accept</button><button className="lg-link" disabled={busy} onClick={() => void friendship(f.trainer.id, 'decline')}>Decline</button></> : <button className="lg-link" disabled={busy} onClick={() => void friendship(f.trainer.id, 'cancel')}>Cancel</button>}<button className="lg-link" disabled={busy} onClick={() => void friendship(f.trainer.id, 'block')}>Block</button></div>)}</>}</section>}

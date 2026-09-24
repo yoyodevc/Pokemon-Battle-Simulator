@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { COMPETITIVE_CORE_POOL, createCompetitiveTeams, createRandomTeams, DEFAULT_ENEMY_TEAM, DEFAULT_PLAYER_TEAM, loadPokemonPicker, type BattleMode, type PickerPokemon } from '../api/battleSetup';
 import { CPU_DIFFICULTIES, type CpuDifficulty } from '../state/cpuStrategy';
+import { sprite } from '../league/client';
 
 export interface BattleConfig { playerRoster: string[]; enemyRoster: string[]; mode: BattleMode; difficulty: CpuDifficulty }
 
@@ -22,6 +23,8 @@ export function TeamSlots({ roster, label, active, onEdit, onRemove, pokemonByNa
 
 export default function BattleSetup({ onStart, onCancel }: { onStart: (config: BattleConfig) => void; onCancel: () => void }) {
   const [picker, setPicker] = useState<PickerPokemon[]>([]);
+  const [hovered, setHovered] = useState<string | null>(null);
+  const preview = (name: string) => { if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) setHovered(name); };
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [query, setQuery] = useState('');
@@ -97,8 +100,8 @@ export default function BattleSetup({ onStart, onCancel }: { onStart: (config: B
         <p className="picker-guidance" role="status">{selected.length === 6 ? 'Lineup complete. Remove a Pokémon to make room for a new contender.' : `${6 - selected.length} open ${6 - selected.length === 1 ? 'slot' : 'slots'}. Select a Pokémon below to add it.`}</p>
         {loading && <div className="picker-state" role="status"><span className="loading-ball" /><h3>Scouting the contenders…</h3><p>Your Pokédex is on its way.</p></div>}
         {error && <div className="picker-state" role="alert"><h3>The Pokédex is taking a break.</h3><p>Check your connection and try again.</p><button className="primary-button" onClick={reload}>Retry connection ↻</button></div>}
-        {!loading && !error && <div className="picker-grid">{filtered.slice(0, visible).map((pokemon) => <button className={`picker-card ${selected.includes(pokemon.name) ? 'is-selected' : ''}`} type="button" key={pokemon.name} onClick={() => toggle(pokemon.name)} disabled={!selected.includes(pokemon.name) && selected.length === 6} aria-pressed={selected.includes(pokemon.name)}>
-          <span className="picker-number">{String(pokemon.id).padStart(3, '0')}</span><img loading="lazy" src={pokemon.sprite} alt="" /><strong>{pokemon.name.replaceAll('-', ' ')}</strong><span className="picker-action">{selected.includes(pokemon.name) ? 'IN YOUR LINEUP ✓' : selected.length === 6 ? 'TEAM FULL' : '+ ADD TO TEAM'}</span>
+        {!loading && !error && <div className="picker-grid">{filtered.slice(0, visible).map((pokemon) => <button className={`picker-card ${selected.includes(pokemon.name) ? 'is-selected' : ''}`} type="button" key={pokemon.name} onPointerEnter={() => preview(pokemon.name)} onPointerLeave={() => setHovered(null)} onFocus={() => preview(pokemon.name)} onBlur={() => setHovered(null)} onClick={() => toggle(pokemon.name)} disabled={!selected.includes(pokemon.name) && selected.length === 6} aria-pressed={selected.includes(pokemon.name)}>
+          <span className="picker-number">{String(pokemon.id).padStart(3, '0')}</span><img className={hovered === pokemon.name ? 'is-animated' : undefined} loading="lazy" src={hovered === pokemon.name ? sprite(pokemon.name) : pokemon.sprite} alt="" onError={() => { if (hovered === pokemon.name) setHovered(null); }} /><strong>{pokemon.name.replaceAll('-', ' ')}</strong><span className="picker-action">{selected.includes(pokemon.name) ? 'IN YOUR LINEUP ✓' : selected.length === 6 ? 'TEAM FULL' : '+ ADD TO TEAM'}</span>
         </button>)}</div>}
         {!loading && !error && filtered.length === 0 && <div className="picker-state"><h3>No contenders found.</h3><p>Try another name or Pokédex number.</p><button className="text-button" onClick={() => setQuery('')}>Clear search →</button></div>}
         {!loading && !error && filtered.length > visible && <button className="load-more" onClick={() => setVisible((count) => count + 36)}>Show more Pokémon <span>↓</span></button>}

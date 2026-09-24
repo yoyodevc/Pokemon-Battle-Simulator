@@ -29,10 +29,11 @@ export function firebaseAuth(config: Config): Auth {
   return authInstance;
 }
 
-export async function request<T>(path: string, body?: unknown): Promise<T> {
+export async function request<T>(path: string, body?: unknown, timeoutMs = 30000): Promise<T> {
   const token = authInstance?.currentUser ? await authInstance.currentUser.getIdToken() : null;
   const response = await fetch(`/api/league/${path}`, {
     method: body === undefined ? 'GET' : 'POST',
+    signal: AbortSignal.timeout(timeoutMs),
     headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -40,6 +41,28 @@ export async function request<T>(path: string, body?: unknown): Promise<T> {
   const result = await response.json();
   if (!response.ok) throw new LeagueError(result.error || 'Request failed.', response.status);
   return result as T;
+}
+export async function streamMatch(id: string, signal: AbortSignal, onMatch: (match: Match) => void): Promise<void> {
+  const token = authInstance?.currentUser ? await authInstance.currentUser.getIdToken() : null;
+  const response = await fetch('/api/league/stream', {
+    method: 'POST', signal,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify({ id }),
+  });
+  if (!response.ok || !response.body) throw new Error('Match stream unavailable.');
+  const reader = response.body.getReader(), decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return;
+    buffer += decoder.decode(value, { stream: true });
+    let end;
+    while ((end = buffer.indexOf('\n\n')) !== -1) {
+      const event = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      if (event.startsWith('data: ')) onMatch(JSON.parse(event.slice(6)) as Match);
+    }
+  }
 }
 // Firebase reports sign-in problems as short codes. Surfacing them verbatim ("Firebase:
 // Error (auth/wrong-password).") hides what the trainer has to do next, so map the ones

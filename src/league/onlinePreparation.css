@@ -1,0 +1,36 @@
+.lg-match-preparing .setup-heading h1{font-size:clamp(44px,5.5vw,76px);margin:8px 0 12px;line-height:1.05}
+.lg-match-preparing .setup-heading .eyebrow{margin-top:14px}
+.lg-match-preparing .setup-heading p:last-child{font-size:14px;color:var(--ink-soft)}
+.lg-match-preparing .setup-mode h2{font-family:inherit;font-size:15px;line-height:1.4;margin-top:5px}
+.lg-match-preparing .team-presets>p{margin-bottom:6px}
+.online-matchup strong{display:block;overflow-wrap:anywhere}
+.online-ready-status strong{display:block;font-size:24px;font-variant-numeric:tabular-nums;margin:4px 0}.online-ready-status small{font-size:10px;color:var(--ink-soft)}
+.online-team-library{margin:-12px 0 24px}.online-team-library summary{cursor:pointer;padding:8px 0;width:fit-content}.online-team-library .lg-saved-teams{margin-top:12px}
+.lg-match-preparing .online-readybar{left:0;right:0;padding-left:4.5%;padding-right:4.5%;background:var(--paper);border-top:0;box-shadow:none}
+.lg-match-preparing .online-readybar{justify-content:flex-end;gap:16px}.online-readybar>p{flex:1;text-align:left}.online-readybar>.back-link{order:1;margin:0;min-height:44px}.online-readybar>.primary-button{order:2;font-size:13px;font-weight:700;color:white}
+@media(max-width:650px){.lg-match-preparing .setup-heading h1{font-size:47px}.lg-match-preparing .setup-mode{grid-template-columns:1fr 1fr}.lg-match-preparing .team-presets{grid-column:1/-1}.online-readybar>p{flex-basis:100%;order:-2;text-align:left}.online-readybar>.primary-button{margin-left:0}.lg-match-preparing .lg-match-heading{margin-bottom:20px}}
+
+.online-readybar::before{content:"";position:absolute;top:0;left:4.5%;right:4.5%;height:1px;background:var(--line)}
+.lg-match-preparing .lg-preparation .picker-search input:not([type=radio]):not([type=checkbox]):not([type=range]){min-width:0;width:100%;min-height:0;outline:none;border:0;border-radius:0;background:transparent;font-size:13px;padding:10px 0}
+.lg-match-preparing .picker-heading h2{font-size:32px;margin-top:6px}
+@media(max-width:650px){.lg-match-preparing .picker-heading h2{font-size:30px}}
+.lg-match-preparing .setup-mode{grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);gap:24px 32px;align-items:start}
+.lg-match-preparing .setup-mode>.mode-label{display:none}
+.lg-match-preparing .online-matchup{grid-column:1/-1;grid-row:1;display:grid;grid-template-columns:minmax(0,1fr) 100px minmax(0,1fr);align-items:center;gap:20px;padding:26px 0 30px;border-bottom:1px solid var(--line)}
+.lg-match-preparing .online-matchup strong{font-family:var(--display);font-size:clamp(26px,3vw,40px);line-height:1.1;margin:8px 0}
+.online-trainer{display:flex;align-items:center;gap:20px}.online-trainer-rival{flex-direction:row-reverse;text-align:right}
+.online-trainer-portrait{display:grid;place-items:center;width:100px;height:110px;flex-shrink:0;background:#e8e8dc;border-bottom:3px solid var(--ink)}
+.online-trainer-rival .online-trainer-portrait{background:#eee2d5;border-color:var(--scarlet)}
+.online-trainer-portrait img{width:80px;height:80px;object-fit:contain;image-rendering:pixelated}
+.online-trainer-state{display:block;font-size:12px;color:var(--ink-soft)}.online-trainer-state::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:#a19e90;margin-right:6px;vertical-align:middle}.online-trainer-state.is-ready{color:#477737}.online-trainer-state.is-ready::before{background:#538734}
+.online-versus{text-align:center}.online-versus span,.online-versus small{display:block;font-size:9px;letter-spacing:.12em;color:var(--ink-soft)}.online-versus b{display:block;font:italic 800 44px var(--display);color:var(--scarlet);margin:5px 0}
+.lg-match-preparing .online-ready-status{grid-column:1;grid-row:2;display:grid;grid-template-columns:auto 1fr;column-gap:14px;align-items:center}
+.online-ready-status .eyebrow{grid-column:1/-1;margin-bottom:6px}
+.lg-match-preparing .online-ready-status strong{font-size:28px;margin:0}
+.lg-match-preparing .online-ready-status small{font-size:12px}
+.lg-match-preparing .setup-mode>.team-presets{grid-column:2;grid-row:2;align-self:center}
+.lg-match-preparing .team-preset-actions strong{font-size:12px}.lg-match-preparing .team-preset-actions small{font-size:10px}.lg-match-preparing .team-preset-actions button{padding:12px;min-height:64px}
+.lg-match-preparing .setup-heading{padding-top:12px}
+@media(max-width:650px){.lg-match-preparing .setup-mode{grid-template-columns:1fr;gap:20px}.lg-match-preparing .setup-mode>.team-presets{grid-column:1;grid-row:3}.lg-match-preparing .online-matchup{grid-template-columns:minmax(0,1fr) 44px minmax(0,1fr);gap:8px;padding:6px 0 22px}.online-trainer,.online-trainer-rival{flex-direction:column;text-align:center;gap:12px}.online-trainer-portrait{width:72px;height:76px}.online-trainer-portrait img{width:60px;height:60px}.online-trainer .eyebrow{font-size:8px;letter-spacing:.06em}.online-trainer-state{font-size:10px}.online-versus b{font-size:32px}.online-versus span{display:none}.online-versus small{font-size:8px}.lg-match-preparing .online-matchup strong{font-size:26px}.lg-match-preparing .online-readybar>.text-button{font-size:14px}}
+.league .online-readybar>.back-link{font-size:12px;font-weight:600;text-decoration:none}
+.online-connection{display:inline-flex;align-items:center;gap:7px;font:600 12px Barlow,"Segoe UI",sans-serif;white-space:nowrap;font-variant-numeric:tabular-nums}.online-connection.good{color:#287745}.online-connection.fair{color:#987200}.online-connection.poor{color:#c43726}.online-connection.pending{color:#72766c}.online-connection svg{flex-shrink:0}.online-live-connection{display:flex;justify-content:flex-end;padding:8px 4.5%;background:var(--paper)}

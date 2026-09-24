@@ -17,12 +17,14 @@ db.exec(readFileSync(new URL('./schema.sql', import.meta.url), 'utf8'));
 const data = blankData();
 for (const row of db.prepare('SELECT * FROM league_records').all()) if (data[row.collection]) data[row.collection][row.id] = JSON.parse(row.payload);
 const insert = db.prepare('INSERT INTO league_records(collection,id,payload) VALUES(?,?,?)');
+const matchListeners = new Set();
 const league = new League(data, current => {
   db.exec('BEGIN IMMEDIATE');
   try {
     db.exec('DELETE FROM league_records');
     for (const [collection, entries] of Object.entries(current)) for (const [id, value] of Object.entries(entries)) insert.run(collection, id, JSON.stringify(value));
     db.exec('COMMIT');
+    for (const listener of matchListeners) { try { listener(); } catch { matchListeners.delete(listener); } }
   } catch (error) { db.exec('ROLLBACK'); throw error; }
 });
 const loadServerBattle = loadBattle;
@@ -93,6 +95,21 @@ const server = createServer(async (req, res) => {
       case 'poll': result = { lobby: league.snapshot(id),
         match: url.searchParams.get('match') ? league.viewMatch(id, url.searchParams.get('match')) : null,
         invitation: url.searchParams.get('invite') ? league.invitation(id, url.searchParams.get('invite')) : null }; break;
+      case 'stream': {
+        if (typeof input.id !== 'string') return json(res, 400, { error: 'Match required.' });
+        league.viewMatch(id, input.id);
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+        let last = '';
+        const send = () => {
+          const value = JSON.stringify(league.viewMatch(id, input.id));
+          if (value !== last && !res.destroyed) { last = value; res.write(`data: ${value}\n\n`); }
+        };
+        const heartbeat = setInterval(() => { if (!res.destroyed) res.write(': keepalive\n\n'); }, 15000);
+        const stop = () => { matchListeners.delete(send); clearInterval(heartbeat); clearTimeout(expiry); if (!res.writableEnded) res.end(); };
+        const expiry = setTimeout(stop, 50000);
+        matchListeners.add(send); res.on('close', stop); send();
+        return;
+      }
       case 'heartbeat': break;
       case 'teams': result = savedTeams(data, id, input); break;
       case 'profile': league.edit(id, input); break;

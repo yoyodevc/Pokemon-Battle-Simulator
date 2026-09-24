@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { handle } from './serverless.mjs';
+import { streamMatch } from '../netlify/functions/league.mjs';
 import { createBattle } from '../src/engine/turn.ts';
 import { emptyStages } from '../src/engine/stats.ts';
 
@@ -42,6 +43,12 @@ class FakeDocRef {
   async get() { return this.snap(); }
   async set(value) { const entry = this.db.docs.get(this.key); this.db.docs.set(this.key, { value: structuredClone(value), version: (entry?.version ?? 0) + 1 }); }
   async delete() { this.db.docs.delete(this.key); }
+  onSnapshot(next) {
+    const listeners = this.db.listeners.get(this.key) || new Set();
+    listeners.add(next); this.db.listeners.set(this.key, listeners);
+    queueMicrotask(() => { if (listeners.has(next)) next(this.snap()); });
+    return () => listeners.delete(next);
+  }
 }
 class FakeTransaction {
   constructor(db) { this.db = db; this.reads = new Map(); this.writes = new Map(); }
@@ -58,11 +65,12 @@ class FakeTransaction {
       if (op.type === 'delete') this.db.docs.delete(key);
       else { const entry = this.db.docs.get(key); this.db.docs.set(key, { value: op.value, version: (entry?.version ?? 0) + 1 }); }
     }
+    for (const key of this.writes.keys()) for (const next of this.db.listeners.get(key) || []) next(new FakeDocRef(this.db, ...key.split('/')).snap());
     return true;
   }
 }
 class FakeFirestore {
-  constructor() { this.docs = new Map(); }
+  constructor() { this.docs = new Map(); this.listeners = new Map(); }
   collection(name) { return { doc: id => new FakeDocRef(this, name, id), where: (f, o, v) => new FakeQuery(this, name).where(f, o, v) }; }
   async getAll(...refs) { return refs.map(r => r.snap()); }
   async runTransaction(fn) {
@@ -147,6 +155,41 @@ test('separate calls preserve presence and concurrent moves resolve once', async
   const ended = await call(`poll?match=${id}`, undefined, tokenA);
   assert.equal(ended.body.match.reason, 'disconnect');
   assert.equal(ended.body.match.winner, 0);
+});
+
+test('match stream pushes each participant a redacted update and rejects spectators', async () => {
+  const { db, call, asUser, roster, verify, loader } = setup();
+  const a = asUser('stream-a'), b = asUser('stream-b'), spectator = asUser('stream-spectator');
+  await call('session', undefined, a); await call('session', undefined, b); await call('session', undefined, spectator);
+  const invitation = await call('challenge', { target: 'stream-b' }, a);
+  const { body: { matchId: id } } = await call('respond', { id: invitation.body.id, action: 'accept' }, b);
+  await call('ready', { id, roster }, a);
+  await call('ready', { id, roster }, b);
+  const source = { db, auth: {} }, read = (request, store) => handle(request, store, { verify, loader });
+  const open = token => streamMatch(new Request('https://league.example/api/league/stream', {
+    method: 'POST', headers: { authorization: `Bearer ${token}`, origin: 'https://league.example', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  }), source, read);
+  assert.equal((await open(spectator)).status, 404);
+  const response = await open(a);
+  assert.equal(response.status, 200);
+  const reader = response.body.getReader();
+  const next = async () => {
+    for (;;) {
+      const { done, value } = await reader.read();
+      assert.equal(done, false);
+      const event = new TextDecoder().decode(value);
+      if (event.startsWith('data: ')) return JSON.parse(event.slice(6));
+    }
+  };
+  const first = await next();
+  assert.equal(first.status, 'battle');
+  assert.equal(first.state.teams[1].pokemon[0].moves, undefined);
+  await call('action', { id, version: first.version, action: { kind: 'move', slot: 0 } }, a);
+  const updated = await next();
+  assert.equal(updated.submitted, true);
+  assert.equal(updated.state.teams[1].pokemon[0].moves, undefined);
+  await reader.cancel();
 });
 
 test('a storage failure returns 503 and never creates a user document', async () => {
