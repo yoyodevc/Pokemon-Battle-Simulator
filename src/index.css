@@ -172,6 +172,8 @@ button:disabled,.primary-button:disabled{opacity:.5}
 .team-slot strong{font-size:10px;font-weight:600;text-transform:capitalize;overflow-wrap:anywhere}
 .team-slot>button:not(.open-slot){font-size:17px;color:var(--ink-soft);min-height:44px}
 .team-slot>button:hover{color:var(--scarlet)}
+.team-slot>button.replace-slot{grid-column:3;min-height:44px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:3px;text-align:left;font-size:10px}.replace-slot strong{color:var(--ink)}.replace-slot span{text-decoration:underline;text-underline-offset:3px}
+.team-slot.is-replacing{background:color-mix(in srgb,var(--scarlet) 8%,var(--surface))}.is-replacing .replace-slot span{color:var(--scarlet-deep);font-weight:600;text-decoration:none}
 .open-slot{grid-column:2/-1;text-align:left;color:var(--ink-faint);font-size:10px;min-height:44px;display:flex;align-items:center;gap:14px}.open-slot span{font-size:20px}
 .setup-divider{display:flex;align-items:center;justify-content:space-between;padding:13px 8px;gap:8px;font-size:8px;letter-spacing:.1em;color:var(--ink-soft)}
 .setup-divider b{font:800 italic 23px var(--display);color:var(--scarlet)}
@@ -194,7 +196,7 @@ button:disabled,.primary-button:disabled{opacity:.5}
 .is-selected .picker-action{color:var(--scarlet)}
 .load-more{display:flex;justify-content:center;gap:20px;align-items:center;margin:20px 0;width:100%;min-height:46px;border:1px solid var(--line);font-size:12px;font-weight:600;background:var(--surface)}
 .setup-footer{position:fixed;bottom:0;left:4.5%;right:4.5%;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 0;margin-top:24px;background:var(--paper);border-top:1px solid var(--line);box-shadow:0 -15px 24px #f4f1e8d9}
-.setup-page .setup-footer{justify-content:flex-end;gap:16px}.setup-page .setup-footer>p{flex:1;order:-1}.setup-page .setup-footer>.text-button{font-size:12px;font-weight:600;text-decoration:none}
+.setup-page .setup-footer{left:0;right:0;padding-inline:4.5%;justify-content:flex-end;gap:16px}.setup-page .setup-footer>p{flex:1;order:-1}.setup-page .setup-footer>.text-button{font-size:12px;font-weight:600;text-decoration:none}
 .setup-footer p{font-size:12px;color:var(--ink-soft)}.ready-dot{background:#538734;margin-right:6px}
 
 /* Shared loading and recovery */
@@ -339,6 +341,7 @@ button:disabled,.primary-button:disabled{opacity:.5}
 .profile-art{min-height:430px}.profile-details{padding:26px 20px 24px 0}.measurements{gap:20px}.move-row{grid-template-columns:150px 1fr 180px;gap:16px}
 }
 @media(max-width:760px){
+.setup-page .setup-footer{display:grid;grid-template-columns:1fr auto;gap:8px 16px;padding-bottom:max(12px,env(safe-area-inset-bottom))}.setup-page .setup-footer>p{width:auto;min-width:0;margin:0}.setup-page .setup-footer>.primary-button{grid-column:1/-1;width:100%;justify-content:space-between;min-height:52px;font-size:16px}.setup-page .setup-footer>.text-button{min-height:44px}
 .site-header{height:66px;padding:0 5%;gap:15px}.brand{font-size:15px}.brand strong{font-size:7px}.brand-ball{width:28px;height:28px}.site-header nav{gap:20px;font-size:11px}.site-header nav small{display:none}
 .hero{height:auto;min-height:860px;max-height:none}.hero-inner{padding:35px 5% 0}.hero h1{font-size:clamp(66px,12.5vw,95px);margin:18px 0 22px}.hero-description{font-size:14px}.hero-caption{margin-top:24px}.hero-art{top:370px}.hero-art:before{inset:0;clip-path:polygon(0 30%,100% 0,100% 100%,0 100%)}.hero-charizard{height:95%;width:78%;right:4%;top:-2%}.hero-pikachu{height:45%;width:35%;right:54%;bottom:0}.hero-blastoise{height:45%;width:40%;right:-5%;bottom:-1%}.arena-ring{width:100vw;height:100vw;top:10%;right:-10%}.hero-footnote{top:auto;bottom:25px;left:5%;right:auto}.hero-footnote span{display:none}.hero-footnote strong{font-size:9px}.hero-art:after{font-size:250px}.league-ribbon{padding:15px 5%;font-size:8px;gap:12px}.league-ribbon>span:nth-of-type(2),.league-ribbon i:last-of-type{display:none}
 .featured-section{padding:38px 5% 0}.section-heading{flex-wrap:wrap}.section-heading h2{font-size:42px}.pokemon-search{width:100%}.featured-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:24px 14px}.pokemon-card h3{font-size:26px}.pokemon-card-art img{padding:10px}.pokemon-card-heading{gap:5px}.type-label{font-size:8px;padding:3px 5px}.collection-footer{font-size:11px}.league-invite{grid-template-columns:1fr;padding:30px;margin:5px 5% 36px}.league-invite h2{font-size:58px}

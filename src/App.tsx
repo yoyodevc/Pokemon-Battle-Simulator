@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
 import LandingPage from './components/LandingPage';
 import PokemonExplorer from './components/PokemonExplorer';
 import BattlePage from './components/BattlePage';
@@ -16,11 +16,13 @@ export default function App() {
   useEffect(() => {
     const change = () => {
       setHash(window.location.hash);
-      if (window.location.hash === '#home' || window.location.hash === '#battle' || window.location.hash.startsWith('#pokemon/')) window.scrollTo(0, 0);
     };
     window.addEventListener('hashchange', change);
     return () => window.removeEventListener('hashchange', change);
   }, []);
+  useLayoutEffect(() => {
+    if (hash !== '#main-content') window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+  }, [hash]);
   let name: string | null = null;
   if (hash.startsWith('#pokemon/')) {
     try { name = decodeURIComponent(hash.slice(9)) || 'pikachu'; }

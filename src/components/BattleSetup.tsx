@@ -5,15 +5,15 @@ import { sprite } from '../league/client';
 
 export interface BattleConfig { playerRoster: string[]; enemyRoster: string[]; mode: BattleMode; difficulty: CpuDifficulty }
 
-export function TeamSlots({ roster, label, active, onEdit, onRemove, pokemonByName, disabled = false }: { roster: string[]; label: string; active: boolean; onEdit: () => void; onRemove: (name: string) => void; pokemonByName: Record<string, PickerPokemon>; disabled?: boolean }) {
+export function TeamSlots({ roster, label, active, onEdit, onRemove, onReplace, replacing, pokemonByName, disabled = false }: { roster: string[]; label: string; active: boolean; onEdit: () => void; onRemove: (name: string) => void; onReplace?: (name: string) => void; replacing?: string | null; pokemonByName: Record<string, PickerPokemon>; disabled?: boolean }) {
   return <section className={`roster-panel ${active ? 'is-editing' : ''}`} aria-label={label}>
     <button type="button" className="roster-heading" disabled={disabled} onClick={onEdit} aria-pressed={active}><span><small>{disabled ? 'YOUR LINEUP' : active ? 'EDITING LINEUP' : 'CLICK TO EDIT'}</small><strong>{label}</strong></span><b>{roster.length}<i>/6</i></b></button>
     <div className="team-slots" aria-label={`${label}, ${roster.length} of 6 selected`}>
       {Array.from({ length: 6 }, (_, slot) => {
         const name = roster[slot];
-        return <div className={`team-slot ${name ? 'filled' : 'empty'}`} key={name ?? slot}>
+        return <div className={`team-slot ${name ? 'filled' : 'empty'} ${name && replacing === name ? 'is-replacing' : ''}`} key={name ?? slot}>
           <span className="team-slot-number">{String(slot + 1).padStart(2, '0')}</span>
-          {name ? <>{pokemonByName[name]?.sprite && <img src={pokemonByName[name].sprite} alt="" />}<strong>{name.replaceAll('-', ' ')}</strong><button type="button" disabled={disabled} aria-label={`Remove ${name} from ${label}`} onClick={() => onRemove(name)}>×</button></>
+          {name ? <>{pokemonByName[name]?.sprite && <img src={pokemonByName[name].sprite} alt="" />}{onReplace ? <button type="button" className="replace-slot" disabled={disabled} aria-pressed={replacing === name} aria-label={`Replace ${name} in ${label}`} onClick={() => onReplace(name)}><strong>{name.replaceAll('-', ' ')}</strong><span>{replacing === name ? 'Replacing…' : 'Replace'}</span></button> : <strong>{name.replaceAll('-', ' ')}</strong>}<button type="button" disabled={disabled} aria-label={`Remove ${name} from ${label}`} onClick={() => onRemove(name)}>×</button></>
             : <button type="button" className="open-slot" disabled={disabled} onClick={onEdit} aria-label={`Edit ${label}, open slot ${slot + 1}`}><span>+</span> Open slot</button>}
         </div>;
       })}
@@ -30,6 +30,11 @@ export default function BattleSetup({ onStart, onCancel }: { onStart: (config: B
   const [query, setQuery] = useState('');
   const [visible, setVisible] = useState(36);
   const [teamSide, setTeamSide] = useState<0 | 1>(0);
+  const [replacing, setReplacing] = useState<string | null>(null);
+  const editTeam = (side: 0 | 1, name: string | null = null) => {
+    setTeamSide(side); setReplacing(name); setQuery(''); setVisible(36);
+    document.getElementById('battle-picker-search')?.focus();
+  };
   const [mode, setMode] = useState<BattleMode>('cpu');
   const [difficulty, setDifficulty] = useState<CpuDifficulty>('trainer');
   const [playerRoster, setPlayerRoster] = useState(DEFAULT_PLAYER_TEAM);
@@ -44,9 +49,13 @@ export default function BattleSetup({ onStart, onCancel }: { onStart: (config: B
   const setSelected = (next: string[]) => teamSide === 0 ? setPlayerRoster(next) : setEnemyRoster(next);
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    return picker.filter((pokemon) => !normalized || pokemon.name.includes(normalized) || String(pokemon.id).includes(normalized));
-  }, [picker, query]);
-  const toggle = (name: string) => setSelected(selected.includes(name) ? selected.filter((item) => item !== name) : selected.length < 6 ? [...selected, name] : selected);
+    return picker.filter((pokemon) => (replacing || selected.length < 6) && !selected.includes(pokemon.name) && (!normalized || pokemon.name.includes(normalized) || String(pokemon.id).includes(normalized)));
+  }, [picker, query, replacing, selected]);
+  const toggle = (name: string) => {
+    if (replacing) {
+      if (!selected.includes(name)) { setSelected(selected.map((item) => item === replacing ? name : item)); setReplacing(null); }
+    } else setSelected(selected.includes(name) ? selected.filter((item) => item !== name) : selected.length < 6 ? [...selected, name] : selected);
+  };
   const canStart = playerRoster.length === 6 && enemyRoster.length === 6;
   const enemyLabel = mode === 'cpu' ? 'Rival team' : 'Player 2 team';
   const missing = [playerRoster.length < 6 ? `${6 - playerRoster.length} more for your team` : '', enemyRoster.length < 6 ? `${6 - enemyRoster.length} more for ${enemyLabel.toLowerCase()}` : ''].filter(Boolean).join(' and ');
@@ -55,7 +64,7 @@ export default function BattleSetup({ onStart, onCancel }: { onStart: (config: B
   const applyCompetitive = () => {
     try {
       const [player, enemy] = createCompetitiveTeams(availableNames);
-      setPlayerRoster(player); setEnemyRoster(enemy); setTeamSide(0);
+      setPlayerRoster(player); setEnemyRoster(enemy); setTeamSide(0); setReplacing(null);
     } catch {
       // The button stays disabled until enough competitive entries are loaded.
     }
@@ -63,7 +72,7 @@ export default function BattleSetup({ onStart, onCancel }: { onStart: (config: B
   const applyRandom = () => {
     try {
       const [player, enemy] = createRandomTeams(availableNames);
-      setPlayerRoster(player); setEnemyRoster(enemy); setTeamSide(0);
+      setPlayerRoster(player); setEnemyRoster(enemy); setTeamSide(0); setReplacing(null);
     } catch {
       // The button stays disabled until the Pokédex has enough entries, but keep
       // this guard for slow or partial data responses.
@@ -90,23 +99,24 @@ export default function BattleSetup({ onStart, onCancel }: { onStart: (config: B
     </section>
     <div className="lobby-layout">
       <aside className="setup-teams" aria-label="Selected teams">
-        <TeamSlots roster={playerRoster} label="Your team" active={teamSide === 0} onEdit={() => setTeamSide(0)} pokemonByName={pokemonByName} onRemove={(name) => { setTeamSide(0); setPlayerRoster(playerRoster.filter((item) => item !== name)); }} />
+        <TeamSlots roster={playerRoster} label="Your team" active={teamSide === 0} replacing={teamSide === 0 ? replacing : null} onEdit={() => editTeam(0)} onReplace={(name) => editTeam(0, name)} pokemonByName={pokemonByName} onRemove={(name) => { editTeam(0); setPlayerRoster(playerRoster.filter((item) => item !== name)); }} />
         <div className="setup-divider"><span>THE MATCHUP</span><b>VS</b><span>MAKE IT COUNT</span></div>
-        <TeamSlots roster={enemyRoster} label={enemyLabel} active={teamSide === 1} onEdit={() => setTeamSide(1)} pokemonByName={pokemonByName} onRemove={(name) => { setTeamSide(1); setEnemyRoster(enemyRoster.filter((item) => item !== name)); }} />
+        <TeamSlots roster={enemyRoster} label={enemyLabel} active={teamSide === 1} replacing={teamSide === 1 ? replacing : null} onEdit={() => editTeam(1)} onReplace={(name) => editTeam(1, name)} pokemonByName={pokemonByName} onRemove={(name) => { editTeam(1); setEnemyRoster(enemyRoster.filter((item) => item !== name)); }} />
       </aside>
       <section className="picker-section" aria-labelledby="picker-title">
         <div className="picker-heading"><div><p className="eyebrow">THE NATIONAL POKÉDEX</p><h2 id="picker-title">PICK YOUR CONTENDERS.</h2></div><span className="section-index">{picker.length ? `${picker.length} AVAILABLE` : 'SCOUTING…'}</span></div>
         <div className="picker-tools"><form className="picker-search" onSubmit={(event) => event.preventDefault()}><label className="sr-only" htmlFor="battle-picker-search">Search Pokémon</label><span aria-hidden="true">⌕</span><input id="battle-picker-search" value={query} onChange={(event) => { setQuery(event.target.value); setVisible(36); }} placeholder="Search name or Pokédex number…" />{query && <button type="button" aria-label="Clear search" onClick={() => setQuery('')}>×</button>}</form><span className="editing-label">Adding to <b>{teamSide === 0 ? 'your team' : enemyLabel.toLowerCase()}</b></span></div>
-        <p className="picker-guidance" role="status">{selected.length === 6 ? 'Lineup complete. Remove a Pokémon to make room for a new contender.' : `${6 - selected.length} open ${6 - selected.length === 1 ? 'slot' : 'slots'}. Select a Pokémon below to add it.`}</p>
+        <p className="picker-guidance" role="status">{replacing ? `Choose a replacement for ${replacing.replaceAll('-', ' ')}. Your current lineup stays until you choose.` : selected.length === 6 ? 'Lineup complete. Choose Replace on a team slot to pick a new contender.' : `${6 - selected.length} open ${6 - selected.length === 1 ? 'slot' : 'slots'}. Select a Pokémon below to add it.`}</p>
+        {replacing && <button type="button" className="text-button" onClick={() => setReplacing(null)}>Cancel replacement</button>}
         {loading && <div className="picker-state" role="status"><span className="loading-ball" /><h3>Scouting the contenders…</h3><p>Your Pokédex is on its way.</p></div>}
         {error && <div className="picker-state" role="alert"><h3>The Pokédex is taking a break.</h3><p>Check your connection and try again.</p><button className="primary-button" onClick={reload}>Retry connection ↻</button></div>}
-        {!loading && !error && <div className="picker-grid">{filtered.slice(0, visible).map((pokemon) => <button className={`picker-card ${selected.includes(pokemon.name) ? 'is-selected' : ''}`} type="button" key={pokemon.name} onPointerEnter={() => preview(pokemon.name)} onPointerLeave={() => setHovered(null)} onFocus={() => preview(pokemon.name)} onBlur={() => setHovered(null)} onClick={() => toggle(pokemon.name)} disabled={!selected.includes(pokemon.name) && selected.length === 6} aria-pressed={selected.includes(pokemon.name)}>
-          <span className="picker-number">{String(pokemon.id).padStart(3, '0')}</span><img className={hovered === pokemon.name ? 'is-animated' : undefined} loading="lazy" src={hovered === pokemon.name ? sprite(pokemon.name) : pokemon.sprite} alt="" onError={() => { if (hovered === pokemon.name) setHovered(null); }} /><strong>{pokemon.name.replaceAll('-', ' ')}</strong><span className="picker-action">{selected.includes(pokemon.name) ? 'IN YOUR LINEUP ✓' : selected.length === 6 ? 'TEAM FULL' : '+ ADD TO TEAM'}</span>
+        {!loading && !error && <div className="picker-grid">{filtered.slice(0, visible).map((pokemon) => <button className="picker-card" type="button" key={pokemon.name} onPointerEnter={() => preview(pokemon.name)} onPointerLeave={() => setHovered(null)} onFocus={() => preview(pokemon.name)} onBlur={() => setHovered(null)} onClick={() => toggle(pokemon.name)}>
+          <span className="picker-number">{String(pokemon.id).padStart(3, '0')}</span><img className={hovered === pokemon.name ? 'is-animated' : undefined} loading="lazy" src={hovered === pokemon.name ? sprite(pokemon.name) : pokemon.sprite} alt="" onError={() => { if (hovered === pokemon.name) setHovered(null); }} /><strong>{pokemon.name.replaceAll('-', ' ')}</strong><span className="picker-action">{replacing ? 'CHOOSE REPLACEMENT' : '+ ADD TO TEAM'}</span>
         </button>)}</div>}
-        {!loading && !error && filtered.length === 0 && <div className="picker-state"><h3>No contenders found.</h3><p>Try another name or Pokédex number.</p><button className="text-button" onClick={() => setQuery('')}>Clear search →</button></div>}
+        {!loading && !error && (replacing || selected.length < 6) && filtered.length === 0 && <div className="picker-state"><h3>No contenders found.</h3><p>Try another name or Pokédex number.</p><button className="text-button" onClick={() => setQuery('')}>Clear search →</button></div>}
         {!loading && !error && filtered.length > visible && <button className="load-more" onClick={() => setVisible((count) => count + 36)}>Show more Pokémon <span>↓</span></button>}
       </section>
     </div>
-    <div className="setup-footer"><button className="text-button" onClick={() => { setPlayerRoster(DEFAULT_PLAYER_TEAM); setEnemyRoster(DEFAULT_ENEMY_TEAM); setDifficulty('trainer'); }}>↻ Reset teams</button><p role="status">{canStart ? <><span className="ready-dot" /> Both teams ready. The stage is yours.</> : `Select ${missing}.`}</p><button className="primary-button" disabled={!canStart} onClick={() => onStart({ playerRoster, enemyRoster, mode, difficulty })}>Enter the arena <span aria-hidden="true">↗</span></button></div>
+    <div className="setup-footer"><button className="text-button" onClick={() => { setPlayerRoster(DEFAULT_PLAYER_TEAM); setEnemyRoster(DEFAULT_ENEMY_TEAM); setDifficulty('trainer'); setReplacing(null); }}>↻ Reset teams</button><p role="status">{canStart ? <><span className="ready-dot" /> Both teams ready.</> : `Select ${missing}.`}</p><button className="primary-button" disabled={!canStart} onClick={() => onStart({ playerRoster, enemyRoster, mode, difficulty })}>Enter the arena <span aria-hidden="true">↗</span></button></div>
   </main>;
 }
