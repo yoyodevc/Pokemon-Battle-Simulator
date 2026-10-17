@@ -44,25 +44,18 @@ export async function request<T>(path: string, body?: unknown, timeoutMs = 30000
 }
 export async function streamMatch(id: string, signal: AbortSignal, onMatch: (match: Match) => void): Promise<void> {
   const token = authInstance?.currentUser ? await authInstance.currentUser.getIdToken() : null;
-  const response = await fetch('/api/league/stream', {
-    method: 'POST', signal,
-    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    body: JSON.stringify({ id }),
-  });
-  if (!response.ok || !response.body) throw new Error('Match stream unavailable.');
-  const reader = response.body.getReader(), decoder = new TextDecoder();
-  let buffer = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) return;
-    buffer += decoder.decode(value, { stream: true });
-    let end;
-    while ((end = buffer.indexOf('\n\n')) !== -1) {
-      const event = buffer.slice(0, end);
-      buffer = buffer.slice(end + 2);
-      if (event.startsWith('data: ')) onMatch(JSON.parse(event.slice(6)) as Match);
-    }
-  }
+  if (!token || signal.aborted) throw new Error('Match stream unavailable.');
+  const url = new URL('/api/league/socket', window.location.href);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  const socket = new WebSocket(url);
+  const stop = () => socket.close();
+  signal.addEventListener('abort', stop, { once: true });
+  await new Promise<void>((resolve, reject) => {
+    socket.onopen = () => socket.send(JSON.stringify({ token, id }));
+    socket.onmessage = event => onMatch(JSON.parse(event.data as string) as Match);
+    socket.onerror = () => reject(new Error('Match stream unavailable.'));
+    socket.onclose = () => resolve();
+  }).finally(() => signal.removeEventListener('abort', stop));
 }
 // Firebase reports sign-in problems as short codes. Surfacing them verbatim ("Firebase:
 // Error (auth/wrong-password).") hides what the trainer has to do next, so map the ones

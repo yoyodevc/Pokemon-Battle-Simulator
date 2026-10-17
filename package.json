@@ -11,6 +11,7 @@
     "test:league": "node --import ./server/register.mjs --test server/league.test.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "deploy": "npm run build && wrangler deploy",
     "test": "vitest run",
     "test:watch": "vitest",
     "simulate": "node scripts/simulate.mjs",
@@ -31,6 +32,7 @@
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.3",
     "vite": "^8.2.2",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "wrangler": "^4.151.1"
   }
 }

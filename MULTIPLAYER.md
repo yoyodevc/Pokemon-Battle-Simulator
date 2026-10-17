@@ -3,7 +3,9 @@
 ## Local play
 
 Requires Node.js 24 or later. Run `npm install` and `npm run dev`.
-The command starts Vite and the authoritative League server together. Open the
+The command starts Vite and the authoritative League Worker (`wrangler dev`, see
+CLOUDFLARE.md) together. Copy `.dev.vars.example` to `.dev.vars` and fill in the
+Firebase web config first. Open the
 Vite URL followed by `/#league`. A Firebase project must be configured (see
 Accounts below) — even guests sign in through Firebase Anonymous Auth, so there
 is no guest-only mode that skips Firebase entirely.
@@ -13,9 +15,10 @@ accept it, and lock both teams. Different tabs in the same browser profile share
 one trainer session (Firebase persists the signed-in user to that browser).
 CPU and pass-and-play battles remain under `/#battle`.
 
-The backend defaults to port 3001. To change it, update `LEAGUE_PORT` in `.env`
-and the corresponding Vite proxy target. Vite can choose another available
-frontend port; include its exact origin in `LEAGUE_ORIGINS`.
+The backend runs on port 8787. To change it, update the port in
+`scripts/dev.mjs` and the Vite proxy target. Vite can choose another available
+frontend port; include its exact origin in `LEAGUE_ORIGINS` in `.dev.vars`.
+The older Node server (`npm run dev:server`, port 3001) still works on its own.
 
 ## Accounts
 
@@ -84,8 +87,8 @@ a fresh reconnect window; interrupted team loading returns to preparation.
 ## Deployment
 
 Self-hosting needs a long-running, **single-instance Node server and a
-persistent disk** for its SQLite database. It is not a static-only deployment
-or a Cloudflare Worker. Keep all installed dependencies available to the
+persistent disk** for its SQLite database. It is not a static-only deployment.
+For Cloudflare, use the Worker in `cloudflare/` instead (see CLOUDFLARE.md). Keep all installed dependencies available to the
 server's TypeScript loader. Even self-hosted, sign-in still goes through the
 Firebase project configured above (`FIREBASE_SERVICE_ACCOUNT_PATH`/
 `FIREBASE_SERVICE_ACCOUNT` must be set on that host).
