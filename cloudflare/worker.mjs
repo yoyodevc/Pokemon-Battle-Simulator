@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { randomInt } from 'node:crypto';
 import { League, blankData } from '../server/league.mjs';
 import { savedTeams } from '../server/teams.mjs';
-import { loadBattle } from '../src/api/battleSetup.ts';
+import { COMPETITIVE_CORE_POOL, DEFAULT_PLAYER_TEAM, VIABLE_RANDOM_POOL, loadBattle } from '../src/api/battleSetup.ts';
 import { ApiError, pokeApi } from '../src/api/client.ts';
 import { verifyFirebaseToken } from './firebaseToken.mjs';
 
@@ -14,6 +14,9 @@ const recordKey = (collection, id) => `${collection}\n${id}`;
 // hundred PokeAPI calls. Responses are kept in SQLite and loading resumes on short alarms,
 // each with a fresh budget, so the cache warms up and later battles start immediately.
 const FETCH_BUDGET = 40;
+const settled = m => m.status === 'ended' || m.status === 'abandoned';
+// Ended matches only change when a rematch is requested, so this stands in for their JSON.
+const settledSignature = m => `#${m.status}|${m.version}|${m.rematch?.length ?? 0}|${m.next ?? ''}`;
 
 export default {
   async fetch(request, env) {
@@ -34,16 +37,24 @@ export class LeagueObject extends DurableObject {
     this.written = new Map();
     for (const row of this.sql.exec('SELECT collection, id, payload FROM league_records')) {
       if (!data[row.collection]) continue;
-      data[row.collection][row.id] = JSON.parse(row.payload);
-      this.written.set(recordKey(row.collection, row.id), row.payload);
+      const value = data[row.collection][row.id] = JSON.parse(row.payload);
+      this.written.set(recordKey(row.collection, row.id), row.collection === 'matches' && settled(value) ? settledSignature(value) : row.payload);
     }
     this.league = new League(data, current => this.persist(current));
     this.limits = new Map();
     this.sent = new Map();
     this.cleaned = Date.now();
     this.attempts = new Map();
-    this.hydrating = null;
+    this.warming = new Map();
+    this.busy = false;
     this.sql.exec('CREATE TABLE IF NOT EXISTS api_cache (url TEXT PRIMARY KEY, body TEXT NOT NULL)');
+    // Fetch the popular Pokemon once, so the preset teams and starters never start cold.
+    this.prewarm = !this.sql.exec("SELECT 1 FROM api_cache WHERE url = 'warm:v1'").toArray().length;
+    if (this.prewarm) {
+      const names = [...new Set([...DEFAULT_PLAYER_TEAM, ...COMPETITIVE_CORE_POOL, ...VIABLE_RANDOM_POOL])];
+      for (let i = 0; i < names.length; i += 6) this.warming.set(Array.from({ length: 6 }, (_, j) => names[(i + j) % names.length]).join(','), 0);
+      this.ctx.storage.setAlarm(Date.now());
+    }
     // Presence is transient, so a restarted object gives live battles a fresh reconnect window.
     for (const m of Object.values(data.matches)) {
       if (m.status === 'loading') { m.status = 'preparing'; m.ready = [false, false]; }
@@ -68,10 +79,12 @@ export class LeagueObject extends DurableObject {
   persist(current) {
     const upserts = [], seen = new Set(), changedMatches = new Set();
     for (const [collection, entries] of Object.entries(current)) for (const [id, value] of Object.entries(entries)) {
-      const key = recordKey(collection, id), payload = JSON.stringify(value);
+      const key = recordKey(collection, id), signature = collection === 'matches' && settled(value) ? settledSignature(value) : null;
       seen.add(key);
-      if (this.written.get(key) === payload) continue;
-      upserts.push([key, collection, id, payload]);
+      if (signature && this.written.get(key) === signature) continue;
+      const payload = JSON.stringify(value);
+      if (!signature && this.written.get(key) === payload) continue;
+      upserts.push([key, collection, id, payload, signature ?? payload]);
       if (collection === 'matches') changedMatches.add(id);
     }
     const removed = [...this.written.keys()].filter(key => !seen.has(key));
@@ -80,7 +93,7 @@ export class LeagueObject extends DurableObject {
       for (const [, collection, id, payload] of upserts) this.sql.exec('INSERT OR REPLACE INTO league_records(collection, id, payload) VALUES(?, ?, ?)', collection, id, payload);
       for (const key of removed) { const split = key.indexOf('\n'); this.sql.exec('DELETE FROM league_records WHERE collection = ? AND id = ?', key.slice(0, split), key.slice(split + 1)); }
     });
-    for (const [key, , , payload] of upserts) this.written.set(key, payload);
+    for (const [key, , , , stored] of upserts) this.written.set(key, stored);
     for (const key of removed) this.written.delete(key);
     if (changedMatches.size) for (const ws of this.ctx.getWebSockets()) {
       const watching = ws.deserializeAttachment();
@@ -110,17 +123,18 @@ export class LeagueObject extends DurableObject {
   }
 
   schedule() {
+    if (this.warming.size || Object.values(this.league.data.matches).some(m => m.status === 'loading')) { this.ctx.storage.setAlarm(Date.now()); return; }
     const data = this.league.data;
-    const live = Object.values(data.matches).some(m => ['preparing', 'loading', 'battle'].includes(m.status))
+    const live = Object.values(data.matches).some(m => ['preparing', 'battle'].includes(m.status))
       || Object.values(data.challenges).some(c => c.status === 'pending');
-    if (Object.values(data.matches).some(m => m.status === 'loading')) this.ctx.storage.setAlarm(Date.now() + 500);
-    else if (live) this.ctx.storage.setAlarm(Date.now() + 15000);
+    if (live) this.ctx.storage.setAlarm(Date.now() + 15000);
   }
 
   async alarm() {
+    if (this.busy) return;
     this.housekeeping();
     const loading = Object.values(this.league.data.matches).find(m => m.status === 'loading');
-    if (loading) await this.hydrate(loading.id);
+    if (loading) await this.hydrate(loading.id); else await this.warm();
     this.schedule();
   }
 
@@ -139,30 +153,61 @@ export class LeagueObject extends DurableObject {
     };
   }
 
+  /** Runs a loader under one invocation's fetch budget. False means the budget ran out and a later attempt should continue. */
+  async withBudget(job) {
+    pokeApi.fetchFn = this.cachedFetch({ used: 0 });
+    try { await job(); return true; }
+    catch (error) { if (!error.budget) throw error; return false; }
+    finally {
+      // Requests queued behind the budget fail fast, so wait for them before another attempt swaps fetchFn.
+      while (pokeApi.snapshot().active + pokeApi.snapshot().pending > 0) await new Promise(resolve => setTimeout(resolve, 50));
+      // SQLite already holds the responses; the in-memory copy would only grow.
+      await pokeApi.clearCache();
+    }
+  }
+
   /** One loading attempt for a match in 'loading'. Runs one at a time so budgets never overlap. */
   async hydrate(matchId) {
     const m = this.league.data.matches[matchId];
-    if (this.hydrating || m?.status !== 'loading') return;
-    const budget = { used: 0 };
-    pokeApi.fetchFn = this.cachedFetch(budget);
-    this.hydrating = (async () => {
-      let timeout;
-      try {
+    if (this.busy || m?.status !== 'loading') return;
+    this.busy = true;
+    let timeout;
+    try {
+      const done = await this.withBudget(async () => {
         const loaded = await Promise.race([
           loadBattle(m.rosters[0], m.rosters[1], 'local', randomInt(1, 0xffffffff)),
           new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('Team loading timed out')), 120000); }),
         ]);
-        this.attempts.delete(matchId);
         this.league.applyBattle(matchId, loaded);
-      } catch (error) {
-        const attempts = (this.attempts.get(matchId) ?? 0) + 1;
-        // Let queued requests from this attempt fail against its spent budget before the next one starts.
-        while (pokeApi.snapshot().active + pokeApi.snapshot().pending > 0) await new Promise(resolve => setTimeout(resolve, 50));
-        if (error.budget && attempts < 40) this.attempts.set(matchId, attempts);
-        else { console.error('Team loading failed:', error); this.attempts.delete(matchId); this.league.failReady(matchId); }
-      } finally { clearTimeout(timeout); }
-    })();
-    try { await this.hydrating; } finally { this.hydrating = null; }
+      });
+      const attempts = (this.attempts.get(matchId) ?? 0) + 1;
+      if (done) this.attempts.delete(matchId);
+      else if (attempts < 40) this.attempts.set(matchId, attempts);
+      else throw new Error('Team loading needed too many steps.');
+    } catch (error) {
+      console.error('Team loading failed:', error);
+      this.attempts.delete(matchId);
+      this.league.failReady(matchId);
+    } finally { clearTimeout(timeout); this.busy = false; }
+  }
+
+  /** Caches the next queued roster's PokeAPI data ahead of a battle that will need it. */
+  async warm() {
+    const [key, attempts] = this.warming.entries().next().value ?? [];
+    if (!key || this.busy) return;
+    this.busy = true;
+    try {
+      const roster = key.split(',');
+      if (await this.withBudget(() => loadBattle(roster, roster, 'local', 1)) || attempts >= 40) this.warming.delete(key);
+      else this.warming.set(key, attempts + 1);
+    } catch { this.warming.delete(key); }
+    finally {
+      this.busy = false;
+      if (this.prewarm && !this.warming.size) {
+        this.prewarm = false;
+        this.sql.exec("INSERT OR REPLACE INTO api_cache(url, body) VALUES('warm:v1', '1')");
+      }
+    }
   }
 
   async fetch(request) {
@@ -223,12 +268,13 @@ export class LeagueObject extends DurableObject {
         case 'match': result = league.viewMatch(id, input.id); break;
         case 'ready':
           if (league.markReady(id, input.id, input.roster)) await this.hydrate(input.id);
+          else if (this.warming.size < 20) this.warming.set(input.roster.join(','), 0);
           result = league.viewMatch(id, input.id); break;
         case 'action': league.act(id, input.id, input.action, input.version); result = league.viewMatch(id, input.id); break;
         case 'rematch': result = { matchId: league.rematch(id, input.id) }; break;
         default: fail('Not found.', 404);
       }
-      league.commit();
+      if (path === 'teams' && input.action) league.commit();
       this.schedule();
       return json(200, result);
     } catch (error) {

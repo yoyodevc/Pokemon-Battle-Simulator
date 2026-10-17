@@ -50,11 +50,14 @@ Local League data lives in `.wrangler/state`. Delete that folder to start fresh.
   and polling alone writes nothing. A cold battle adds a few hundred cache rows.
 - **50 outgoing requests per invocation.** Building a battle from scratch takes
   a few hundred PokeAPI calls. The Durable Object caches every PokeAPI response
-  in SQLite and loads a cold battle in steps of 40 calls, one step every half
-  second, so the first battle with new Pokemon can take several seconds in the
-  "loading" state. Later battles with cached Pokemon start immediately.
+  in SQLite and loads in steps of 40 calls, each step starting as soon as the
+  last ends. To keep that off the critical path, the first start fetches the
+  preset and starter teams (54 Pokemon) in the background, which takes about a
+  minute, and a player's team starts loading the moment they ready up instead
+  of when both have. Teams made of other Pokemon still wait a few seconds the
+  first time, then are cached for good.
 - **5 GB of Durable Object storage** on the account. Cached PokeAPI responses
-  are the largest part, a few hundred KB per Pokemon.
+  are the largest part. The preloaded set is well under 100 MB.
 
 ## Notes
 
