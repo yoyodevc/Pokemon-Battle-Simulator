@@ -1,6 +1,9 @@
 import { spawn } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
+// wrangler dev needs the assets directory to exist; Vite serves the frontend in development.
+mkdirSync('dist', { recursive: true });
 const children = [
-  spawn(process.execPath, ['--env-file-if-exists=.env', '--import', './server/register.mjs', 'server/index.mjs'], { stdio: 'inherit' }),
+  spawn(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'dev', '--port', '8787'], { stdio: 'inherit' }),
   spawn(process.execPath, ['node_modules/vite/bin/vite.js', ...process.argv.slice(2)], { stdio: 'inherit' }),
 ];
 let stopping = false;
